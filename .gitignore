@@ -1,0 +1,20 @@
+# Ignore data outputs and large files
+/data/outputs/
+*.tif
+*.jp2
+*.gpkg
+*.qgz
+*.shp
+*.dbf
+*.prj
+*.shx
+*.sbn
+*.sbx
+*.csv
+*.aux.xml
+*.png
+!data/outputs/ndvi_10m_github.png
+!data/outputs/veedel_green_categorized_resized.png
+!README.md
+!Notebooks/
+!data/boundaries/
