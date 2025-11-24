@@ -1,5 +1,8 @@
-# Ignore data outputs and large files
-/data/outputs/
+## Ignore data outputs and large files, but allow specific files in data/outputs/
+data/outputs/*
+!data/outputs/.gitkeep
+!data/outputs/ndvi_10m_github.png
+!data/outputs/veedel_green_categorized_resized.png
 *.tif
 *.jp2
 *.gpkg
@@ -13,8 +16,6 @@
 *.csv
 *.aux.xml
 *.png
-!data/outputs/ndvi_10m_github.png
-!data/outputs/veedel_green_categorized_resized.png
 !README.md
 !Notebooks/
 !data/boundaries/
