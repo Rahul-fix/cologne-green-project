@@ -61,7 +61,25 @@ Ensure your project folder is structured as follows:
    - Browse to `cologne_analysis.gpkg`
    - Select `veedel_boundaries` layer
 
-✅ **You now have a spatial database!** One file contains all your vector data.
+### Step 1.4: Reproject Satellite Imagery to EPSG:25832
+
+**Important:** Sentinel-2 data comes in WGS 84 / UTM zone 31N (EPSG:32631) or similar. We need to reproject it to our project CRS **EPSG:25832** (ETRS89 / UTM zone 32N) to match the Cologne boundaries.
+
+1. **Processing → Toolbox** → Search for **"Warp (reproject)"** (GDAL)
+2. **Run for Band 4 (Red):**
+   - **Input layer:** `T31UGS_..._B04_10m.jp2`
+   - **Target CRS:** `EPSG:25832`
+   - **Resampling method:** Bilinear (better for continuous data)
+   - **Output file:** `data/outputs/T31UGS_B04_reprojected.tif`
+   - Click **Run**
+3. **Run for Band 8 (NIR):**
+   - **Input layer:** `T31UGS_..._B08_10m.jp2`
+   - **Target CRS:** `EPSG:25832`
+   - **Resampling method:** Bilinear
+   - **Output file:** `data/outputs/T31UGS_B08_reprojected.tif`
+   - Click **Run**
+
+✅ **Now use these `_reprojected.tif` files for all analysis!**
 
 ***
 
@@ -69,19 +87,19 @@ Ensure your project folder is structured as follows:
 
 ### Step 2.1: Load Satellite Bands
 
-1. Drag both Sentinel-2 bands from `data/satellite/R10m/` into QGIS:
-   - `T31UGS_..._B04_10m.jp2`
-   - `T31UGS_..._B08_10m.jp2`
+1. Drag the **reprojected** bands into QGIS if they aren't already there:
+   - `B04_reprojected.tif`
+   - `B08_reprojected.tif`
 
 ### Step 2.2: Calculate NDVI
 
 1. **Raster → Raster Calculator**
 2. **Formula:**
    ```
-   ("T31UGS_..._B08_10m@1" - "T31UGS_..._B04_10m@1") / ("T31UGS_..._B08_10m@1" + "T31UGS_..._B04_10m@1")
+   ("B08_reprojected@1" - "B04_reprojected@1") / ("B08_reprojected@1" + "B04_reprojected@1")
    ```
    *(Double-click the bands in the "Raster bands" list to insert exact names)*
-3. **Output:** `~/cologne_green_project/data/outputs/ndvi_cologne.tif`
+3. **Output:** `data/outputs/ndvi_cologne.tif`
 4. Click **OK**
 
 ### **Step 2.3: Style NDVI**
