@@ -13,8 +13,8 @@ cog_conversion: True  # Creates Cloud-Optimized GeoTIFF
 # ======================
 model_weights: ./FLAIR-HUB_LC-A_IR_swinbase-upernet/FLAIR-HUB_LC-A_IR_swinbase-upernet.safetensors
 use_gpu: True
-batch_size: 16 # Optimized for Nvidia T4 (16GB VRAM)
-num_worker: 4  # Matches your 4 vCPUs
+batch_size: 10 #16 # Optimized for Nvidia T4 (16GB VRAM)
+num_worker: 0  # Matches your 4 vCPUs
 
 img_pixels_detection: 512  # Process 512x512 tiles
 margin: 32  # Overlap to avoid edge artifacts

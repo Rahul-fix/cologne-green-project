@@ -136,18 +136,36 @@ def process_image(img_path, config_path):
             source_file = candidates[0]
             
         if source_file and source_file.exists():
-            shutil.move(source_file, target_output)
-            print(f"✅ Renamed output {source_file.name} to {target_output.name}")
-
-            # Enforce EPSG:25832 CRS (Fix for EngineeringCRS issue)
-            try:
-                with rasterio.open(target_output, 'r+') as dst:
-                    dst.crs = rasterio.crs.CRS.from_epsg(25832)
-                print(f"✅ Enforced EPSG:25832 CRS for {target_output.name}")
-            except Exception as e:
-                print(f"⚠️ Failed to enforce CRS: {e}")
+            print(f"✅ Found output: {source_file.name}")
             
-            # Clean up other artifacts (like the non-COG version if it exists)
+            # Rewrite with correct CRS (EPSG:25832) to avoid EngineeringCRS issues
+            # We read the source and write to target_output with explicit CRS
+            try:
+                with rasterio.open(source_file) as src:
+                    data = src.read()
+                    profile = src.profile.copy()
+                    
+                    # Force EPSG:25832
+                    profile.update(
+                        crs=rasterio.crs.CRS.from_epsg(25832),
+                        driver='GTiff' # Ensure GTiff
+                    )
+                    
+                    with rasterio.open(target_output, 'w', **profile) as dst:
+                        dst.write(data)
+                        
+                print(f"✅ Saved {target_output.name} with enforced EPSG:25832")
+                
+                # Remove original source file
+                os.remove(source_file)
+                
+            except Exception as e:
+                print(f"❌ Failed to rewrite with correct CRS: {e}")
+                # Fallback: just move it if rewrite fails
+                if not target_output.exists():
+                    shutil.move(source_file, target_output)
+
+            # Clean up other artifacts
             for c in candidates:
                 if c != source_file and c.exists():
                     os.remove(c)
