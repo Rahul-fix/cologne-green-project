@@ -1,0 +1,31 @@
+name: flair_env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - gdal
+  - pip
+  - pip:
+    # Install torch, torchvision with CUDA support after environment creation:
+    # pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+    - rasterio
+    - geopandas
+    - matplotlib
+    - numpy
+    - pandas
+    - scikit-learn
+    - timm
+    - pytorch-lightning
+    - segmentation-models-pytorch
+    - huggingface_hub
+    - omegaconf
+    - lightning-utilities
+    - jsonargparse
+    - python-dotenv
+    - efficientnet-pytorch
+    - pretrainedmodels
+    - pyyaml
+    - click
+    - click-plugins
+    - git+https://github.com/IGNF/FLAIR-HUB.git

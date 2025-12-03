@@ -1,0 +1,29 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+data/dop_j2w/
+
+# Virtual environments
+.venv
+.env
+
+# Data
+data/raw/
+data/processed/
+data/boundaries/
+data/stats/
+*.tif
+*.jp2
+*.parquet
+*.zip
+*.tar.gz
+
+# Model Weights
+DL_cologne_green/FLAIR-HUB_LC-A_IR_swinbase-upernet/
+
+# OS
+.DS_Store
