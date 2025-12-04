@@ -17,20 +17,22 @@ st.set_page_config(page_title="GreenCologne (Cloud)", layout="wide")
 st.title("🌿 GreenCologne (Cloud Dashboard)")
 
 # --- Configuration ---
+# --- Configuration ---
 # Get secrets from Streamlit secrets (HF Spaces) or Environment Variables
-HMAC_KEY = st.secrets.get("HMAC_KEY", os.getenv("HMAC_KEY"))
-HMAC_SECRET = st.secrets.get("HMAC_SECRET", os.getenv("HMAC_SECRET"))
-BUCKET_NAME = st.secrets.get("BUCKET_NAME", os.getenv("BUCKET_NAME", "cologne-green-data-v1"))
+HF_TOKEN = st.secrets.get("HF_TOKEN", os.getenv("HF_TOKEN"))
+DATASET_ID = st.secrets.get("DATASET_ID", os.getenv("DATASET_ID", "Rahul-fix/cologne-green-data")) # Default to uploaded dataset
 
-if not HMAC_KEY or not HMAC_SECRET:
-    st.error("❌ Missing GCS Credentials. Please set HMAC_KEY and HMAC_SECRET in Secrets.")
-    st.stop()
+if not HF_TOKEN:
+    st.warning("⚠️ HF_TOKEN not found. If the dataset is private, you must set it in Secrets or .env.")
 
-# Paths (S3 style for DuckDB)
-STATS_FILE = f"s3://{BUCKET_NAME}/data/stats/stats.parquet"
-DISTRICTS_FILE = f"s3://{BUCKET_NAME}/data/boundaries/Stadtviertel.parquet"
-BOROUGHS_FILE = f"s3://{BUCKET_NAME}/data/boundaries/Stadtbezirke.parquet"
-PROCESSED_PREFIX = f"s3://{BUCKET_NAME}/processed"
+# Paths (HTTPFS style for DuckDB with HF)
+# Use the 'resolve/main' URL structure for raw file access
+BASE_URL = f"https://huggingface.co/datasets/{DATASET_ID}/resolve/main"
+
+STATS_FILE = f"{BASE_URL}/data/stats/stats.parquet"
+DISTRICTS_FILE = f"{BASE_URL}/data/boundaries/Stadtviertel.parquet"
+BOROUGHS_FILE = f"{BASE_URL}/data/boundaries/Stadtbezirke.parquet"
+PROCESSED_PREFIX = f"{BASE_URL}/data/processed"
 
 # --- Database Connection ---
 @st.cache_resource
@@ -39,11 +41,16 @@ def get_db_connection():
     con.execute("INSTALL spatial; LOAD spatial;")
     con.execute("INSTALL httpfs; LOAD httpfs;")
     
-    # Configure S3/GCS access
-    con.execute(f"SET s3_region='europe-west3';")
-    con.execute(f"SET s3_endpoint='storage.googleapis.com';")
-    con.execute(f"SET s3_access_key_id='{HMAC_KEY}';")
-    con.execute(f"SET s3_secret_access_key='{HMAC_SECRET}';")
+    # Configure HTTP access (Header for private datasets)
+    if HF_TOKEN:
+        con.execute(f"SET s3_region='us-east-1';") # Dummy region often needed for S3 compat if used, but for HTTP:
+        # For simple HTTPFS with DuckDB, we might need to pass headers if private.
+        # DuckDB's HTTPFS supports headers.
+        con.execute(f"SET http_keep_alive=false;") # Sometimes helps
+        # Setting the header for all requests to huggingface.co
+        # Note: DuckDB < 0.10 might differ, but generally:
+        con.execute(f"SET http_headers={{'Authorization': 'Bearer {HF_TOKEN}'}};")
+        
     return con
 
 try:
