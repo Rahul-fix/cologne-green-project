@@ -11,6 +11,11 @@ from streamlit_folium import st_folium
 import geopandas as gpd
 import os
 import shapely.wkb
+from dotenv import load_dotenv
+
+# Load environment variables for local testing
+load_dotenv()
+load_dotenv("DL_cologne_green/.env")
 
 st.set_page_config(page_title="GreenCologne (Cloud)", layout="wide")
 
