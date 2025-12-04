@@ -31,11 +31,25 @@ def main():
     print(f"   Min: ({minx:.0f}, {miny:.0f})")
     print(f"   Max: ({maxx:.0f}, {maxy:.0f})")
     
-    # Load metadata CSV
+    # Download metadata if missing or force update
+    METADATA_URL = "https://www.opengeodata.nrw.de/produkte/geobasis/lusat/akt/dop/dop_jp2_f10/dop_meta.zip"
+    METADATA_ZIP = DATA_DIR / "metadata" / "dop_meta.zip"
     METADATA_FILE = DATA_DIR / "metadata" / "dop_nw.csv"
-    if not METADATA_FILE.exists():
-        print(f"❌ Error: {METADATA_FILE} not found.")
-        return
+    
+    print(f"⬇️  Downloading metadata from {METADATA_URL}...")
+    import urllib.request
+    import zipfile
+    
+    try:
+        urllib.request.urlretrieve(METADATA_URL, METADATA_ZIP)
+        with zipfile.ZipFile(METADATA_ZIP, 'r') as zip_ref:
+            zip_ref.extractall(DATA_DIR / "metadata")
+        print("✅ Metadata downloaded and extracted.")
+    except Exception as e:
+        print(f"⚠️  Failed to download metadata: {e}")
+        if not METADATA_FILE.exists():
+            print("❌ Error: Metadata file not found and download failed.")
+            return
 
     print("📄 Loading metadata from dop_nw.csv...")
     # Read CSV with semicolon delimiter, skipping the first 5 lines of metadata header
@@ -45,16 +59,6 @@ def main():
     # Ensure coordinates are numeric
     df_meta['Koordinatenursprung_East'] = pd.to_numeric(df_meta['Koordinatenursprung_East'], errors='coerce')
     df_meta['Koordinatenursprung_North'] = pd.to_numeric(df_meta['Koordinatenursprung_North'], errors='coerce')
-    
-    # Filter tiles within the bounding box
-    # We add a small buffer (e.g. 0) or just strict inequality
-    # The coordinates in CSV are the top-left or bottom-left? Usually bottom-left for UTM grid.
-    # Let's assume they represent the corner. A tile is 1km x 1km (1000m).
-    # So a tile at (E, N) covers (E, N) to (E+1000, N+1000).
-    # We want tiles that intersect the bbox.
-    
-    # Tile MinX < BBox MaxX AND Tile MaxX > BBox MinX
-    # Tile MinY < BBox MaxY AND Tile MaxY > BBox MinY
     
     print("🔍 Filtering tiles within Cologne...")
     
@@ -68,19 +72,14 @@ def main():
     
     cologne_tiles = df_meta[mask].copy()
     
-    print(f"✅ Found {len(cologne_tiles)} tiles covering Cologne.")
+    print(f"✅ Found {len(cologne_tiles)} tiles covering Cologne (before deduplication).")
     
-    # Construct download URLs
-    # URL format: https://www.opengeodata.nrw.de/produkte/geobasis/lusat/akt/dop/dop_jp2_f10/{folder_name}/{tile_name}.jp2
-    # Folder name seems to be derived from tile name or coordinates.
-    # From sample: dop10rgbi_32_356_5645_1_nw_2025 -> folder dop_356_5645_1_nw_2025
-    # Let's look at the CSV 'Kachelname' again.
-    # Example: dop10rgbi_32_478_5740_1_nw_2024
-    # The folder usually matches the file name without the 'dop10rgbi_32_' prefix? 
-    # Wait, the sample URL was: .../dop_356_5645_1_nw_2025/dop10rgbi_32_356_5645_1_nw_2025.jp2
-    # The folder is `dop_` + `356_5645_1_nw_2025`.
-    # The file is `dop10rgbi_32_` + `356_5645_1_nw_2025`.
-    # So we can extract the suffix.
+    # Deduplicate: Keep only the latest year for each location
+    # Sort by Kachelname (which includes year) descending, then drop duplicates by coordinates
+    cologne_tiles = cologne_tiles.sort_values('Kachelname', ascending=False)
+    cologne_tiles = cologne_tiles.drop_duplicates(subset=['Koordinatenursprung_East', 'Koordinatenursprung_North'], keep='first')
+    
+    print(f"✅ Found {len(cologne_tiles)} unique tiles covering Cologne (after deduplication).")
     
     def generate_url(row):
         kachelname = row['Kachelname']
