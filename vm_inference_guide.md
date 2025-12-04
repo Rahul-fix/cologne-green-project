@@ -67,15 +67,29 @@ uv run python scripts/download_weights.py
 python scripts/download_weights.py
 ```
 
-### Download Satellite Tiles
-This downloads all tiles listed in `data/metadata/cologne_tiles.csv` to `data/raw/`.
-**Note:** This is ~20GB of data.
+### Download Boundaries (Important!)
+Before downloading tiles, you need the Cologne city boundaries.
 ```bash
-# Default uses 8 parallel workers
-uv run python scripts/download_all_tiles.py --workers 16
-# OR
-python scripts/download_all_tiles.py --workers 16
+uv run python scripts/download_boundaries.py
 ```
+
+### Download Satellite Tiles
+This script first identifies all tiles covering Cologne (using the boundaries) and then downloads them.
+It automatically prefers the latest available year (e.g., 2025) but falls back to older years (2023) if necessary.
+
+1. **Generate Tile List**
+   ```bash
+   uv run python scripts/find_cologne_tiles.py
+   ```
+
+2. **Download Tiles**
+   This downloads ~20GB of data to `data/raw/`.
+   ```bash
+   # Default uses 8 parallel workers
+   uv run python scripts/download_all_tiles.py --workers 16
+   # OR
+   python scripts/download_all_tiles.py --workers 16
+   ```
 
 ## 4. Run Inference (GPU Enabled)
 
