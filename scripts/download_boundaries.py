@@ -5,8 +5,8 @@ import geopandas as gpd
 from pathlib import Path
 
 # URL for Cologne districts (Stadtteile/Veedel)
-# Source: https://offenedaten-koeln.de/dataset/stadtteile
-URL = "https://offenedaten-koeln.de/sites/default/files/stadtteile.zip"
+# Source: https://offenedaten-koeln.de/dataset/stadtteile-k%C3%B6ln
+URL = "https://www.offenedaten-koeln.de/sites/default/files/Stadtteil_20.zip"
 
 DATA_DIR = Path("data")
 BOUNDARIES_DIR = DATA_DIR / "boundaries"
