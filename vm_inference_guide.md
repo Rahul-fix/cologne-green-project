@@ -52,9 +52,11 @@ pip install -e .
 ```
 
 ### Install FLAIR-HUB
-You need to install the `flairhub` package.
+You need to install the `flairhub` package from the local submodule.
 ```bash
-pip install git+https://github.com/IGNF/FLAIR-HUB.git
+uv pip install -e DL_cologne_green/FLAIR-HUB
+# OR
+pip install -e DL_cologne_green/FLAIR-HUB
 ```
 
 ## 3. Download Data & Weights
