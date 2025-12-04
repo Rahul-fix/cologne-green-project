@@ -268,15 +268,23 @@ with tab2:
              bounds, crs = get_tile_bounds(selected_tile)
         
         if bounds and crs:
-            # Reproject bounds to WGS84 for Folium
+            # Helper to sanitize CRS to avoid PROJ errors with EngineeringCRS
+            def sanitize_crs(input_crs):
+                try:
+                    # Check if it's the problematic EngineeringCRS
+                    if "EngineeringCRS" in input_crs.to_wkt() or "Unknown engineering datum" in input_crs.to_wkt():
+                        return rasterio.crs.CRS.from_epsg(25832)
+                except Exception:
+                    pass
+                return input_crs
+
             # Reproject bounds to WGS84 for Folium
             try:
-                # Try standard transformation first
-                wgs84_bounds = transform_bounds(crs, 'EPSG:4326', *bounds)
+                # Try standard transformation first with sanitized CRS
+                safe_crs = sanitize_crs(crs)
+                wgs84_bounds = transform_bounds(safe_crs, 'EPSG:4326', *bounds)
             except Exception as e:
-                # Fallback for "EngineeringCRS" or other weird definitions
-                # We know the data is in ETRS89 / UTM zone 32N (EPSG:25832)
-                # print(f"CRS Warning: {e}. Forcing EPSG:25832.")
+                # Fallback just in case
                 try:
                     src_crs = rasterio.crs.CRS.from_epsg(25832)
                     wgs84_bounds = transform_bounds(src_crs, 'EPSG:4326', *bounds)
@@ -448,7 +456,15 @@ with tab2:
                         
                     # Reproject bounds
                     try:
-                        t_wgs84_bounds = transform_bounds(t_crs, 'EPSG:4326', *t_bounds)
+                        # Use the same sanitization logic (re-defined or copied, but here we can just do the check inline or assume the previous definition is not in scope if it was inside the if block)
+                        # Actually, sanitize_crs was defined inside the 'if bounds and crs' block above, so it's not available here.
+                        # Let's just force the check here.
+                        
+                        safe_t_crs = t_crs
+                        if "EngineeringCRS" in t_crs.to_wkt() or "Unknown engineering datum" in t_crs.to_wkt():
+                             safe_t_crs = rasterio.crs.CRS.from_epsg(25832)
+                             
+                        t_wgs84_bounds = transform_bounds(safe_t_crs, 'EPSG:4326', *t_bounds)
                     except Exception:
                          try:
                             src_crs = rasterio.crs.CRS.from_epsg(25832)
