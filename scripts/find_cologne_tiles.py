@@ -13,12 +13,25 @@ BOUNDARIES_FILE = DATA_DIR / "boundaries" / "Stadtviertel.parquet"
 OUTPUT_FILE = DATA_DIR / "metadata" / "cologne_tiles.csv"
 
 def main():
-    if not BOUNDARIES_FILE.exists():
-        print(f"❌ Error: {BOUNDARIES_FILE} not found.")
-        return
-
-    print("📥 Loading Cologne boundaries...")
-    gdf = gpd.read_parquet(BOUNDARIES_FILE)
+    gdf = None
+    if BOUNDARIES_FILE.exists():
+        print(f"✅ Found {BOUNDARIES_FILE}")
+        gdf = gpd.read_parquet(BOUNDARIES_FILE)
+    else:
+        print(f"⚠️  {BOUNDARIES_FILE} not found. Checking for Shapefiles...")
+        # Look for any .shp file in the boundaries directory
+        shp_files = list(DATA_DIR.glob("boundaries/*.shp"))
+        if shp_files:
+            shp_path = shp_files[0]
+            print(f"✅ Found Shapefile: {shp_path}")
+            gdf = gpd.read_file(shp_path)
+            # Save as parquet for next time
+            print(f"💾 Converting to {BOUNDARIES_FILE} for faster loading next time...")
+            gdf.to_parquet(BOUNDARIES_FILE)
+        else:
+            print(f"❌ Error: No boundary files found in {DATA_DIR / 'boundaries'}")
+            print("Please run scripts/download_boundaries.py first.")
+            return
     
     # Reproject to UTM Zone 32N (EPSG:25832)
     print("🔄 Reprojecting to EPSG:25832 (UTM Zone 32N)...")
