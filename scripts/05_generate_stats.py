@@ -32,9 +32,9 @@ def calculate_stats(mask_path, boundaries):
     raw_path = RAW_DIR / raw_name
     
     if not raw_path.exists():
-        print(f"⚠️ Raw file {raw_name} not found. Skipping NDVI stats.")
-        return None
-
+        print(f"⚠️ Raw file {raw_name} not found. Calculating Area ONLY (skipping NDVI).")
+        ndvi = None
+    
     with rasterio.open(mask_path) as src_mask:
         mask = src_mask.read(1)
         transform = src_mask.transform
@@ -43,21 +43,19 @@ def calculate_stats(mask_path, boundaries):
         res = src_mask.res
         pixel_area = res[0] * res[1]
         
-        # Read Raw and Calculate NDVI
-        with rasterio.open(raw_path) as src_raw:
-            # Read Red (1) and NIR (4)
-            # Assuming same dimensions as mask (which they should be)
-            # If mask is COG/different size, we might need to match, but usually they match.
-            if src_raw.shape != src_mask.shape:
-                print("⚠️ Dimension mismatch between mask and raw. Resampling raw...")
-                # Read with resampling to match mask
-                red = src_raw.read(1, out_shape=src_mask.shape, resampling=rasterio.enums.Resampling.nearest).astype(float)
-                nir = src_raw.read(4, out_shape=src_mask.shape, resampling=rasterio.enums.Resampling.nearest).astype(float)
-            else:
-                red = src_raw.read(1).astype(float)
-                nir = src_raw.read(4).astype(float)
-                
-            ndvi = calculate_ndvi(nir, red)
+        if ndvi is None and raw_path.exists():
+             # Read Raw and Calculate NDVI
+            with rasterio.open(raw_path) as src_raw:
+                # Read Red (1) and NIR (4)
+                if src_raw.shape != src_mask.shape:
+                    # print("⚠️ Dimension mismatch between mask and raw. Resampling raw...")
+                    red = src_raw.read(1, out_shape=src_mask.shape, resampling=rasterio.enums.Resampling.nearest).astype(float)
+                    nir = src_raw.read(4, out_shape=src_mask.shape, resampling=rasterio.enums.Resampling.nearest).astype(float)
+                else:
+                    red = src_raw.read(1).astype(float)
+                    nir = src_raw.read(4).astype(float)
+                    
+                ndvi = calculate_ndvi(nir, red)
 
     # Reproject boundaries to match image CRS
     if boundaries.crs != crs:
@@ -108,13 +106,17 @@ def calculate_stats(mask_path, boundaries):
         
         if count > 0:
             area_m2 = count * pixel_area
-            ndvi_sum = ndvi[valid_mask].sum()
+            
+            if ndvi is not None:
+                ndvi_sum = ndvi[valid_mask].sum()
+            else:
+                ndvi_sum = 0.0
             
             stats_list.append({
                 'name': dist_name,
                 'green_area_m2': area_m2,
                 'ndvi_sum': ndvi_sum,
-                'ndvi_count': count
+                'ndvi_count': count if ndvi is not None else 0
             })
             
     if not stats_list:
