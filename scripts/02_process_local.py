@@ -1,213 +1,185 @@
 #!/usr/bin/env python3
 import os
-import rasterio
-import numpy as np
-import geopandas as gpd
-from pathlib import Path
+import sys
 import yaml
-import subprocess
-import shutil
-
+import time
+import torch
+import rasterio
 import argparse
+import traceback
+import numpy as np
+from pathlib import Path
+from torch.utils.data import DataLoader
+
+# Import FLAIR-HUB components
+from flair_zonal_detection.config import load_config, validate_config
+from flair_zonal_detection.model_utils import build_inference_model, compute_patch_sizes
+from flair_zonal_detection.inference import (
+    initialize_geometry_and_resolutions,
+    prep_dataset,
+    init_outputs,
+    inference_and_write,
+    postpro_outputs
+)
+from flair_zonal_detection.slicing import generate_patches_from_reference
 
 # Configuration
 DATA_DIR = Path("data")
 PROCESSED_DIR = DATA_DIR / "processed"
 PROCESSED_DIR.mkdir(exist_ok=True, parents=True)
-
-# Default path
-DEFAULT_CONFIG_PATH = Path("DL_cologne_green/config_nrw_inference.yaml")
-
-def calculate_ndvi(nir, red):
-    # Avoid division by zero
-    denominator = (nir + red)
-    denominator[denominator == 0] = 0.0001
-    ndvi = (nir - red) / denominator
-    return ndvi
-
-def process_image(img_path, config_path):
-    print(f"Processing {img_path}...")
-    
-    # 1. Calculate NDVI (Still useful for quick visualization)
-    with rasterio.open(img_path) as src:
-        # Check band count. NRW DOP usually has 4 bands: R, G, B, NIR (or similar)
-        # config_nrw_inference.yaml says: channels: [4, 1, 2] # NIR, R, G
-        # So band 4 is NIR, band 1 is Red.
-        
-        if src.count < 4:
-            print(f"⚠️ Image has {src.count} bands, expected at least 4 for NDVI (NIR). Skipping NDVI.")
-        else:
-            red = src.read(1).astype(float)
-            nir = src.read(4).astype(float)
-            
-            # NDVI Calculation (On-Demand in App now)
-            # print("Calculating NDVI...")
-            # ndvi = calculate_ndvi(nir, red)
-            
-            # # Save NDVI with compression (Int16 scaled by 10000)
-            # # NDVI is -1 to 1. Scaled: -10000 to 10000.
-            # # This reduces size significantly compared to Float32.
-            # ndvi_path = PROCESSED_DIR / f"{img_path.stem}_ndvi.tif"
-            
-            # # Scale and cast to int16
-            # ndvi_int16 = (ndvi * 10000).astype(np.int16)
-            
-            # profile = src.profile
-            # profile.update(
-            #     dtype=rasterio.int16, 
-            #     count=1, 
-            #     driver='GTiff',
-            #     compress='lzw',
-            #     predictor=2,
-            #     nodata=-32768 # Optional nodata value
-            # )
-            
-            # with rasterio.open(ndvi_path, 'w', **profile) as dst:
-            #     dst.write(ndvi_int16, 1)
-            #     # Add metadata about scaling
-            #     dst.update_tags(scale=0.0001, offset=0)
-                
-            # print(f"✅ NDVI saved to {ndvi_path} (Int16 Compressed)")
-
-    # 2. Run FLAIR-HUB Inference
-    target_output = PROCESSED_DIR / f"{img_path.stem}_mask.tif"
-    if target_output.exists():
-        print(f"✅ Mask {target_output.name} already exists. Skipping inference.")
-        return
-
-    print("Running FLAIR-HUB Segmentation...")
-    
-    if not config_path.exists():
-        print(f"❌ Config not found at {config_path}. Cannot run inference.")
-        return
-
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-
-    # Update config for this specific image
-    # We need to point 'AERIAL_RGBI' to our local image
-    if 'AERIAL_RGBI' in config['modalities']:
-        config['modalities']['AERIAL_RGBI']['input_img_path'] = str(img_path.absolute())
-    else:
-        print("❌ 'AERIAL_RGBI' modality missing in config.")
-        return
-
-    # Update output path
-    config['output_path'] = str(PROCESSED_DIR.absolute())
-    config['output_name'] = img_path.stem # Output will be {stem}_pred.tif usually
-    
-    # Ensure model weights path is correct relative to where we run
-    # Config has: ./FLAIR-HUB_LC-A_IR_swinbase-upernet/...
-    # We are running from project root, so DL_cologne_green/...
-    original_weights = config.get('model_weights', '')
-    if original_weights.startswith('./FLAIR-HUB'):
-         config['model_weights'] = str(Path("DL_cologne_green") / original_weights.lstrip('./'))
-    
-    # Save temp config
-    temp_config_path = PROCESSED_DIR / f"config_{img_path.stem}.yaml"
-    with open(temp_config_path, 'w') as f:
-        yaml.dump(config, f)
-
-    # Run inference command
-    # Using 'flairhub_zonal' which should be in path after pip install -e
-    cmd = ["flairhub_zonal", "--config", str(temp_config_path)]
-    
-    try:
-        subprocess.run(cmd, check=True)
-        print(f"✅ Inference complete for {img_path.name}")
-        
-        # Rename output to standard mask name
-        # FLAIR-HUB output naming can vary. It seems to be:
-        # {stem}_AERIAL_LABEL-COSIA_argmax_COG.tif (if COG enabled)
-        # {stem}_AERIAL_LABEL-COSIA_argmax.tif (if COG disabled)
-        
-        target_output = PROCESSED_DIR / f"{img_path.stem}_mask.tif"
-        
-        # Search for likely outputs
-        candidates = list(PROCESSED_DIR.glob(f"{img_path.stem}*argmax*.tif"))
-        
-        # Prefer COG if available
-        cog_candidates = [c for c in candidates if "COG" in c.name]
-        
-        source_file = None
-        if cog_candidates:
-            source_file = cog_candidates[0]
-        elif candidates:
-            source_file = candidates[0]
-            
-        if source_file and source_file.exists():
-            print(f"✅ Found output: {source_file.name}")
-            
-            # Rewrite with correct CRS (EPSG:25832) to avoid EngineeringCRS issues
-            # We read the source and write to target_output with explicit CRS
-            try:
-                with rasterio.open(source_file) as src:
-                    data = src.read()
-                    profile = src.profile.copy()
-                    
-                    # Force EPSG:25832
-                    profile.update(
-                        crs=rasterio.crs.CRS.from_epsg(25832),
-                        driver='GTiff' # Ensure GTiff
-                    )
-                    
-                    with rasterio.open(target_output, 'w', **profile) as dst:
-                        dst.write(data)
-                        
-                print(f"✅ Saved {target_output.name} with enforced EPSG:25832")
-                
-                # Remove original source file
-                os.remove(source_file)
-                
-            except Exception as e:
-                print(f"❌ Failed to rewrite with correct CRS: {e}")
-                # Fallback: just move it if rewrite fails
-                if not target_output.exists():
-                    shutil.move(source_file, target_output)
-
-            # Clean up other artifacts
-            for c in candidates:
-                if c != source_file and c.exists():
-                    os.remove(c)
-        else:
-            print(f"⚠️ Could not find expected output file for {img_path.stem}")
-            print(f"   Found candidates: {[c.name for c in candidates]}")
-
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Inference failed: {e}")
-    finally:
-        if temp_config_path.exists():
-            os.remove(temp_config_path)
+DEFAULT_CONFIG_PATH = Path("DL_cologne_green/config_vm_inference.yaml")
 
 def main():
-    parser = argparse.ArgumentParser(description="Run inference on local JP2 tiles.")
+    parser = argparse.ArgumentParser(description="Run optimized inference on local JP2 tiles.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Path to inference config file")
     args = parser.parse_args()
 
-    # Look in data/raw/
+    # 1. Find images
     jp2_files = list((DATA_DIR / "raw").glob("*.jp2"))
-    
     if not jp2_files:
         print("❌ No .jp2 files found in data/raw/.")
         return
-
-    print(f"Found {len(jp2_files)} images to process.")
-
-    for i, img_path in enumerate(jp2_files):
-        print(f"\n--- Processing [{i+1}/{len(jp2_files)}] {img_path.name} ---")
-        
-        # Check if output already exists
+    
+    # Filter out already processed files
+    images_to_process = []
+    for img_path in jp2_files:
         mask_path = PROCESSED_DIR / f"{img_path.stem}_mask.tif"
-        ndvi_path = PROCESSED_DIR / f"{img_path.stem}_ndvi.tif"
-        
         if mask_path.exists():
             print(f"✅ Output {mask_path.name} already exists. Skipping.")
-            continue
+        else:
+            images_to_process.append(img_path)
+            
+    if not images_to_process:
+        print("✅ All images already processed!")
+        return
+
+    print(f"Found {len(images_to_process)} images to process.")
+
+    # 2. Load Config & Model (ONCE)
+    print("\n[1/3] Loading Configuration and Model...")
+    try:
+        # Load base config
+        config = load_config(str(args.config))
+        
+        # Fix weights path if needed
+        original_weights = config.get('model_weights', '')
+        if original_weights.startswith('./FLAIR-HUB'):
+             config['model_weights'] = str(Path("DL_cologne_green") / original_weights.lstrip('./'))
+        
+        # Set device
+        config['device'] = torch.device("cuda" if config.get("use_gpu", torch.cuda.is_available()) else "cpu")
+        print(f"Using device: {config['device']}")
+        
+        # Compute patch sizes (independent of image size)
+        patch_sizes = compute_patch_sizes(config)
+        
+        # Build Model
+        start_model = time.time()
+        model = build_inference_model(config, patch_sizes).to(config['device'])
+        model.eval() # Ensure eval mode
+        print(f"✅ Loaded model in {time.time() - start_model:.2f}s")
+        
+    except Exception as e:
+        print(f"❌ Failed to initialize model: {e}")
+        traceback.print_exc()
+        return
+
+    # 3. Process Images Loop
+    print("\n[2/3] Starting Inference Loop...")
+    
+    for i, img_path in enumerate(images_to_process):
+        print(f"\n--- Processing [{i+1}/{len(images_to_process)}] {img_path.name} ---")
         
         try:
-            process_image(img_path, args.config)
+            # Create a per-image config copy
+            # We need a deep copy of specific dicts if we modify them, 
+            # but standard dict copy might be enough if we only change top-level or specific keys.
+            # Safer to reload or copy carefully. 
+            # Since `initialize_geometry_and_resolutions` modifies config in-place, 
+            # we should probably reload the base config or be very careful.
+            # Actually, `load_config` is cheap (just reading YAML). 
+            # But we want to keep the MODEL loaded.
+            
+            # Let's use the base config structure but update it.
+            # `initialize_geometry_and_resolutions` sets 'image_bounds', 'modality_resolutions', etc.
+            # These are specific to the image.
+            
+            current_config = config.copy()
+            # Deep copy modalities to avoid polluting base config
+            import copy
+            current_config['modalities'] = copy.deepcopy(config['modalities'])
+            
+            # Update Input Path
+            if 'AERIAL_RGBI' in current_config['modalities']:
+                current_config['modalities']['AERIAL_RGBI']['input_img_path'] = str(img_path.absolute())
+            else:
+                print("❌ 'AERIAL_RGBI' modality missing in config.")
+                continue
+
+            # Update Output Path
+            current_config['output_path'] = str(PROCESSED_DIR.absolute())
+            current_config['output_name'] = img_path.stem
+            
+            # Initialize Geometry (Per Image)
+            current_config = initialize_geometry_and_resolutions(current_config)
+            
+            # Generate Patches
+            tiles_gdf = generate_patches_from_reference(current_config)
+            # print(f"Sliced into {len(tiles_gdf)} tiles")
+            
+            # Prepare Dataset & DataLoader
+            dataset = prep_dataset(current_config, tiles_gdf, patch_sizes)
+            dataloader = DataLoader(
+                dataset, 
+                batch_size=current_config['batch_size'], 
+                num_workers=current_config['num_worker']
+            )
+            
+            # Init Outputs
+            # We need to open the reference image to get profile
+            with rasterio.open(current_config['modalities'][current_config['reference_modality']]['input_img_path']) as ref_img:
+                output_files, temp_paths = init_outputs(current_config, ref_img)
+                
+                # Run Inference
+                inference_and_write(model, dataloader, tiles_gdf, current_config, output_files, ref_img)
+            
+            # Post-processing (COG)
+            postpro_outputs(temp_paths, current_config)
+            
+            # Rename/Cleanup to match expected output format
+            # The script logic expects {stem}_mask.tif
+            # FLAIR-HUB produces {stem}_AERIAL_LABEL-COSIA_argmax.tif
+            
+            expected_output = PROCESSED_DIR / f"{img_path.stem}_mask.tif"
+            
+            # Find the generated file
+            candidates = list(PROCESSED_DIR.glob(f"{img_path.stem}*argmax*.tif"))
+            source_file = None
+            if candidates:
+                source_file = candidates[0] # Take the first one (usually only one task)
+            
+            if source_file and source_file.exists():
+                # Enforce EPSG:25832 and rename
+                with rasterio.open(source_file) as src:
+                    data = src.read()
+                    profile = src.profile.copy()
+                    profile.update(crs=rasterio.crs.CRS.from_epsg(25832), driver='GTiff')
+                    
+                    with rasterio.open(expected_output, 'w', **profile) as dst:
+                        dst.write(data)
+                
+                # Remove original
+                os.remove(source_file)
+                print(f"✅ Saved final mask: {expected_output.name}")
+            else:
+                print(f"⚠️ Could not find output file for {img_path.name}")
+
         except Exception as e:
             print(f"❌ Failed to process {img_path.name}: {e}")
+            traceback.print_exc()
+            # Continue to next image!
+
+    print("\n✅ All processing finished.")
 
 if __name__ == "__main__":
     main()
