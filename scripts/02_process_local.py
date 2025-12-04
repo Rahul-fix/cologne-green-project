@@ -109,9 +109,8 @@ def process_image(img_path, config_path):
         yaml.dump(config, f)
 
     # Run inference command
-    # Using python -m to avoid PATH issues
-    import sys
-    cmd = [sys.executable, "-m", "flair_zonal_detection.main", "--config", str(temp_config_path)]
+    # Using 'flairhub_zonal' which should be in path after pip install -e
+    cmd = ["flairhub_zonal", "--config", str(temp_config_path)]
     
     try:
         subprocess.run(cmd, check=True)
