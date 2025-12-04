@@ -33,7 +33,7 @@ def upload_to_hf(dataset_id, token=None, private=True):
 
     # Define paths
     base_dir = Path("data")
-    folders_to_upload = ["processed", "stats", "boundaries"]
+    folders_to_upload = ["raw", "processed", "stats", "boundaries"]
     
     print(f"Uploading data to {dataset_id}...")
     
