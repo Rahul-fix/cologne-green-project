@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 load_dotenv("DL_cologne_green/.env")
 
-def upload_to_hf(dataset_id, token=None, private=True):
+def upload_to_hf(dataset_id, token=None, private=True, args=None):
     """
     Uploads processed data to a Hugging Face Dataset.
     """
@@ -44,6 +44,22 @@ def upload_to_hf(dataset_id, token=None, private=True):
             continue
             
         print(f"Uploading {folder}...")
+        # Check if folder already exists in repo to avoid re-uploading/hashing large data
+        try:
+            repo_files = api.list_repo_files(repo_id=dataset_id, repo_type="dataset")
+            folder_exists = any(f.startswith(f"data/{folder}/") for f in repo_files)
+        except Exception:
+            folder_exists = False
+
+        if folder_exists:
+            print(f"Found existing data in 'data/{folder}' on Hugging Face.")
+            if folder == "raw": # Special handling for raw data which is huge
+                if not args.force:
+                    response = input(f"Skipping 'data/{folder}' to save time? (y/n) [y]: ").strip().lower()
+                    if response in ["", "y", "yes"]:
+                        print(f"Skipping {folder}...")
+                        continue
+        
         print(f"Uploading {folder}...")
         try:
             # Use upload_large_folder for better stability with large datasets
@@ -75,6 +91,7 @@ if __name__ == "__main__":
     parser.add_argument("--token", type=str, help="Hugging Face Write Token")
     parser.add_argument("--public", action="store_true", help="Make dataset public (default is private)")
     parser.add_argument("--auto", action="store_true", help="Automatically accept default dataset ID")
+    parser.add_argument("--force", action="store_true", help="Force upload even if files exist (skip prompt)")
     
     args = parser.parse_args()
     
@@ -98,4 +115,4 @@ if __name__ == "__main__":
         else:
             dataset_id = input(f"Enter Dataset ID [{default_id}]: ").strip() or default_id
 
-    upload_to_hf(dataset_id, token=args.token, private=not args.public)
+    upload_to_hf(dataset_id, token=args.token, private=not args.public, args=args)
