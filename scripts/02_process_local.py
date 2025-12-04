@@ -70,6 +70,15 @@ def main():
         config['device'] = torch.device("cuda" if config.get("use_gpu", torch.cuda.is_available()) else "cpu")
         print(f"Using device: {config['device']}")
         
+        # Initialize resolution using the first image
+        # This is required for compute_patch_sizes
+        first_img = images_to_process[0]
+        if 'AERIAL_RGBI' in config['modalities']:
+            config['modalities']['AERIAL_RGBI']['input_img_path'] = str(first_img.absolute())
+        
+        # This populates 'reference_resolution', 'modality_resolutions', etc.
+        config = initialize_geometry_and_resolutions(config)
+        
         # Compute patch sizes (independent of image size)
         patch_sizes = compute_patch_sizes(config)
         
