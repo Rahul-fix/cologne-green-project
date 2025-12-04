@@ -44,13 +44,27 @@ def upload_to_hf(dataset_id, token=None, private=True):
             continue
             
         print(f"Uploading {folder}...")
-        api.upload_folder(
-            folder_path=str(local_path),
-            repo_id=dataset_id,
-            repo_type="dataset",
-            path_in_repo=f"data/{folder}",
-            token=token
-        )
+        print(f"Uploading {folder}...")
+        try:
+            # Use upload_large_folder for better stability with large datasets
+            # This handles chunking and retries automatically
+            api.upload_large_folder(
+                folder_path=str(local_path),
+                repo_id=dataset_id,
+                repo_type="dataset",
+                path_in_repo=f"data/{folder}",
+                token=token
+            )
+        except AttributeError:
+            # Fallback for older huggingface_hub versions
+            print("Warning: upload_large_folder not found. Falling back to upload_folder.")
+            api.upload_folder(
+                folder_path=str(local_path),
+                repo_id=dataset_id,
+                repo_type="dataset",
+                path_in_repo=f"data/{folder}",
+                token=token
+            )
         
     print("Upload complete!")
     print(f"View your dataset at: https://huggingface.co/datasets/{dataset_id}")
