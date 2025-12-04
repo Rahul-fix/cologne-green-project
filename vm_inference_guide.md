@@ -59,6 +59,25 @@ uv pip install -e DL_cologne_green/FLAIR-HUB
 pip install -e DL_cologne_green/FLAIR-HUB
 ```
 
+**Option C: Setup with Python 3.11 (via uv)**
+Recommended if your system Python is older than 3.11 (e.g., Ubuntu 20.04).
+
+1. **Install Python 3.11 and Create Virtual Environment**
+   ```bash
+   uv python install 3.11
+   uv venv .venv311 --python 3.11
+   ```
+
+2. **Install Dependencies**
+   ```bash
+   # Activate the environment
+   source .venv311/bin/activate
+   
+   # Install the project in editable mode
+   # We use uv pip to ensure it installs into the active venv
+   uv pip install -p .venv311 -e DL_cologne_green/FLAIR-HUB
+   ```
+
 ## 3. Download Data & Weights
 
 ### Download Model Weights
@@ -110,9 +129,9 @@ python scripts/02_process_local.py --config DL_cologne_green/config_vm_inference
 
 ### Performance Tuning
 For your specific setup (4 vCPU, 15GB RAM, T4 GPU):
-- **Batch Size:** `16` is a safe starting point. If you see "Out of Memory" errors, reduce to `10`. If GPU memory is underutilized, try `24`.
+- **Batch Size:** `10` is a safe starting point (verified working). `16` might work but could cause OOM.
 - **Download Workers:** Use `--workers 16` for downloads to saturate your network connection.
-- **Inference Workers:** Keep `num_worker: 4` in the config. Increasing this might cause CPU contention since you only have 4 vCPUs.
+- **Inference Workers:** Set `num_worker: 0` (main process only) to avoid System RAM OOM. Increasing this consumes significant RAM per worker.
 
 ### Monitoring
 - The script will process images one by one.
