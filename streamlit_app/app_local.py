@@ -271,10 +271,20 @@ with tab2:
             # Helper to sanitize CRS to avoid PROJ errors with EngineeringCRS
             def sanitize_crs(input_crs):
                 try:
-                    # Check if it's the problematic EngineeringCRS
-                    if "EngineeringCRS" in input_crs.to_wkt() or "Unknown engineering datum" in input_crs.to_wkt():
+                    # If it's already a known EPSG code, it's fine
+                    if input_crs.is_epsg_code:
+                        return input_crs
+                    
+                    # If it has a WKT that looks like EngineeringCRS, force EPSG:25832
+                    wkt = input_crs.to_wkt()
+                    if "EngineeringCRS" in wkt or "Unknown engineering datum" in wkt:
                         return rasterio.crs.CRS.from_epsg(25832)
+                        
+                    # Fallback: If it's not EPSG and we are unsure, assume EPSG:25832 for this dataset
+                    # This is aggressive but necessary to stop the PROJ errors
+                    return rasterio.crs.CRS.from_epsg(25832)
                 except Exception:
+                    # If anything fails, return original and let it crash/log
                     pass
                 return input_crs
 
@@ -456,13 +466,16 @@ with tab2:
                         
                     # Reproject bounds
                     try:
-                        # Use the same sanitization logic (re-defined or copied, but here we can just do the check inline or assume the previous definition is not in scope if it was inside the if block)
-                        # Actually, sanitize_crs was defined inside the 'if bounds and crs' block above, so it's not available here.
-                        # Let's just force the check here.
-                        
+                    # Reproject bounds
+                    try:
+                        # Aggressive sanitization inline
                         safe_t_crs = t_crs
-                        if "EngineeringCRS" in t_crs.to_wkt() or "Unknown engineering datum" in t_crs.to_wkt():
-                             safe_t_crs = rasterio.crs.CRS.from_epsg(25832)
+                        try:
+                            if not t_crs.is_epsg_code:
+                                # Force EPSG:25832 for non-standard CRS in this dataset
+                                safe_t_crs = rasterio.crs.CRS.from_epsg(25832)
+                        except:
+                            pass
                              
                         t_wgs84_bounds = transform_bounds(safe_t_crs, 'EPSG:4326', *t_bounds)
                     except Exception:
