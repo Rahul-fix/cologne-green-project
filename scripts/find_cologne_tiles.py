@@ -84,12 +84,8 @@ def main():
     
     def generate_url(row):
         kachelname = row['Kachelname']
-        # Extract suffix: remove 'dop10rgbi_32_'
-        if kachelname.startswith('dop10rgbi_32_'):
-            suffix = kachelname.replace('dop10rgbi_32_', '')
-            folder = f"dop_{suffix}"
-            return f"https://www.opengeodata.nrw.de/produkte/geobasis/lusat/akt/dop/dop_jp2_f10/{folder}/{kachelname}.jp2"
-        return None
+        # Files are directly in the root folder, no subfolder needed
+        return f"https://www.opengeodata.nrw.de/produkte/geobasis/lusat/akt/dop/dop_jp2_f10/{kachelname}.jp2"
 
     cologne_tiles['url'] = cologne_tiles.apply(generate_url, axis=1)
     cologne_tiles['filename'] = cologne_tiles['Kachelname'] + ".jp2"
