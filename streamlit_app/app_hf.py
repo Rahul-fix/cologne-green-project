@@ -181,6 +181,84 @@ with tab2:
         processed_files = fs.glob(f"datasets/{DATASET_ID}/data/processed/*_mask.tif")
         return [Path(f).stem.replace("_mask", "") for f in processed_files]
 
+    # --- Veedel Mapping Logic ---
+    @st.cache_data(ttl=3600)
+    def get_tile_to_veedel_mapping():
+        """
+        Creates a mapping of Veedel -> List of Tiles based on spatial intersection.
+        Fetches metadata from HF.
+        """
+        try:
+            # Load Tiles Metadata from HF
+            tiles_url = f"hf://datasets/{DATASET_ID}/data/metadata/cologne_tiles.csv"
+            tiles_df = pd.read_csv(tiles_url)
+            
+            # Create geometries for tiles (assuming 1km x 1km)
+            from shapely.geometry import box
+            
+            geometries = []
+            for _, row in tiles_df.iterrows():
+                e = row['Koordinatenursprung_East']
+                n = row['Koordinatenursprung_North']
+                # DOP10 tiles are 1km x 1km
+                geometries.append(box(e, n, e + 1000, n + 1000))
+            
+            tiles_gdf = gpd.GeoDataFrame(tiles_df, geometry=geometries, crs="EPSG:25832")
+            
+            # Load Districts (already loaded as gdf_districts, but we need it in projected CRS for intersection)
+            # We can reload or use the existing one. Existing one is WGS84.
+            # Let's reload from the parquet file directly to be safe and consistent
+            districts_url = f"hf://datasets/{DATASET_ID}/data/boundaries/Stadtviertel.parquet"
+            districts_gdf = gpd.read_parquet(districts_url)
+            
+            if districts_gdf.crs != "EPSG:25832":
+                districts_gdf = districts_gdf.to_crs("EPSG:25832")
+                
+            # Spatial Join
+            joined = gpd.sjoin(tiles_gdf, districts_gdf, how="inner", predicate="intersects")
+            
+            # Create mapping: Veedel -> [Tile Names]
+            mapping = joined.groupby('name')['Kachelname'].apply(list).to_dict()
+            return mapping
+        except Exception as e:
+            st.warning(f"Could not load tile metadata for filtering: {e}")
+            return {}
+
+    tile_mapping = get_tile_to_veedel_mapping()
+
+    # --- Veedel Selection UI ---
+    # Get all districts
+    all_veedel_names = sorted(gdf_districts['name'].tolist()) if not gdf_districts.empty else []
+    veedel_options = ["All"] + all_veedel_names
+    
+    # Session State for Map
+    if 'map_center' not in st.session_state:
+        st.session_state['map_center'] = [50.9375, 6.9603]
+    if 'map_zoom' not in st.session_state:
+        st.session_state['map_zoom'] = 11
+    if 'selected_veedel' not in st.session_state:
+        st.session_state['selected_veedel'] = "All"
+
+    def on_veedel_change():
+        veedel = st.session_state['selected_veedel']
+        if veedel == "All":
+            st.session_state['map_center'] = [50.9375, 6.9603]
+            st.session_state['map_zoom'] = 11
+        else:
+            # Find centroid
+            selected_geom = gdf_districts[gdf_districts['name'] == veedel]
+            if not selected_geom.empty:
+                centroid = selected_geom.geometry.centroid.iloc[0]
+                st.session_state['map_center'] = [centroid.y, centroid.x]
+                st.session_state['map_zoom'] = 14
+
+    selected_veedel = st.selectbox(
+        "Select Veedel (District)", 
+        veedel_options, 
+        key='selected_veedel',
+        on_change=on_veedel_change
+    )
+
     available_tiles = list_remote_files()
     
     if not available_tiles:
@@ -188,8 +266,43 @@ with tab2:
     else:
         available_tiles = sorted(list(set(available_tiles)))
         
+        # Filter tiles based on Veedel
+        if selected_veedel != "All":
+            veedel_tiles = set(tile_mapping.get(selected_veedel, []))
+            
+            if not veedel_tiles:
+                st.info(f"No tiles found for {selected_veedel} in the current dataset.")
+            
+            # Filter available tiles
+            filtered_tiles = [t for t in veedel_tiles if t in available_tiles]
+            
+            if not filtered_tiles and veedel_tiles:
+                 st.warning(f"Tiles exist for {selected_veedel} but are not processed yet.")
+                 tile_options = []
+            elif not filtered_tiles:
+                 tile_options = []
+            else:
+                tile_options = sorted(filtered_tiles)
+        else:
+            tile_options = available_tiles
+
         # --- Tile Selection ---
-        selected_tile = st.selectbox("Select Tile", available_tiles)
+        selected_tile = st.selectbox("Select Tile", tile_options)
+        
+        # Option to show all tiles in the current list
+        show_all_tiles = st.checkbox("Show all listed tiles", value=True)
+        
+        tiles_to_display = []
+        if show_all_tiles:
+            MAX_TILES_TO_SHOW = 5 # Lower limit for cloud app to be safe
+            if len(tile_options) > MAX_TILES_TO_SHOW:
+                st.warning(f"Showing first {MAX_TILES_TO_SHOW} tiles out of {len(tile_options)} to avoid performance issues.")
+                tiles_to_display = tile_options[:MAX_TILES_TO_SHOW]
+            else:
+                tiles_to_display = tile_options
+        else:
+            if selected_tile:
+                tiles_to_display = [selected_tile]
         
         # Layer selection
         layer_type = st.radio("Select Layer", ["NDVI", "Segmentation Mask", "Raw Satellite (RGB)"], horizontal=True)
@@ -244,27 +357,56 @@ with tab2:
                 center_lat = (wgs84_bounds[1] + wgs84_bounds[3]) / 2
                 center_lon = (wgs84_bounds[0] + wgs84_bounds[2]) / 2
                 
-                m = folium.Map(location=[center_lat, center_lon], zoom_start=14, tiles="CartoDB positron")
+                # Use session state for map center if set (from Veedel selection), otherwise tile center
+                # But if we just selected a tile, maybe we want to see it?
+                # Logic: If Veedel selected, use Veedel center. If All, use Tile center?
+                # Let's stick to the session state which is updated by Veedel selection.
+                # If "All" is selected, we might want to center on the tile.
+                
+                map_center = st.session_state['map_center']
+                map_zoom = st.session_state['map_zoom']
+                
+                if selected_veedel == "All" and selected_tile:
+                     # If specific tile selected in "All" mode, center on it
+                     map_center = [center_lat, center_lon]
+                     map_zoom = 14
+
+                m = folium.Map(location=map_center, zoom_start=map_zoom, tiles="CartoDB positron")
                 
                 # Base Maps
                 folium.TileLayer(tiles="OpenStreetMap", name="OpenStreetMap", control=True, show=False).add_to(m)
                 folium.TileLayer(tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}", attr="Google", name="Satellite (Google)", overlay=False, control=True, show=False).add_to(m)
 
-                # Overlay Logic
-                overlay_url = None
-                if layer_type == "Segmentation Mask":
-                    overlay_url = get_remote_url(selected_tile, 'mask')
-                elif layer_type == "NDVI":
-                    overlay_url = get_remote_url(selected_tile, 'ndvi')
-                elif layer_type == "Raw Satellite (RGB)":
-                    overlay_url = get_remote_url(selected_tile, 'raw')
-                
-                if overlay_url:
-                    with st.spinner(f"Loading {layer_type}..."):
+                # Overlay Logic (Loop through tiles_to_display)
+                for tile_name in tiles_to_display:
+                    overlay_url = None
+                    if layer_type == "Segmentation Mask":
+                        overlay_url = get_remote_url(tile_name, 'mask')
+                    elif layer_type == "NDVI":
+                        overlay_url = get_remote_url(tile_name, 'ndvi')
+                    elif layer_type == "Raw Satellite (RGB)":
+                        overlay_url = get_remote_url(tile_name, 'raw')
+                    
+                    if overlay_url:
+                        # Get bounds for this tile
+                        t_bounds, t_crs = get_remote_bounds(tile_name)
+                        if not t_bounds: continue
+                        
+                        try:
+                            # Sanitize CRS if needed (though get_remote_bounds returns what rasterio reads)
+                            # We can reuse the transform logic
+                            try:
+                                t_wgs84_bounds = transform_bounds(t_crs, 'EPSG:4326', *t_bounds)
+                            except:
+                                src_crs = rasterio.crs.CRS.from_epsg(25832)
+                                t_wgs84_bounds = transform_bounds(src_crs, 'EPSG:4326', *t_bounds)
+                        except:
+                            continue
+
                         try:
                             with rasterio.open(overlay_url) as src:
                                 # Downsample for performance
-                                MAX_DIM = 800
+                                MAX_DIM = 600 # Smaller for multi-tile
                                 scale = MAX_DIM / max(src.width, src.height)
                                 if scale < 1:
                                     out_shape = (src.count, int(src.height * scale), int(src.width * scale))
@@ -284,21 +426,14 @@ with tab2:
                                     opacity = 0.9
                                     
                                 elif layer_type == "NDVI":
-                                    # If NDVI file exists, it's single band float
-                                    # If we are computing on the fly from raw, we need raw logic
-                                    # Here we assume pre-calculated NDVI exists or we read raw
                                     if src.count == 1:
                                         ndvi_data = data[0]
-                                        # Handle Int16 scaling if needed
                                         if ndvi_data.dtype == 'int16':
                                             ndvi_data = ndvi_data.astype('float32') * 0.0001
-                                            
                                         import matplotlib.colors as mcolors
                                         norm = mcolors.Normalize(vmin=-1, vmax=1)
                                         cmap = plt.get_cmap('RdYlGn')
                                         image_data = cmap(norm(ndvi_data))
-                                    else:
-                                        st.warning("NDVI file has unexpected band count.")
 
                                 elif layer_type == "Raw Satellite (RGB)":
                                     if data.shape[0] >= 3:
@@ -314,13 +449,23 @@ with tab2:
                                 if image_data is not None:
                                     folium.raster_layers.ImageOverlay(
                                         image=image_data,
-                                        bounds=[[wgs84_bounds[1], wgs84_bounds[0]], [wgs84_bounds[3], wgs84_bounds[2]]],
+                                        bounds=[[t_wgs84_bounds[1], t_wgs84_bounds[0]], [t_wgs84_bounds[3], t_wgs84_bounds[2]]],
                                         opacity=opacity,
-                                        name=f"{layer_type} - {selected_tile}"
+                                        name=f"{layer_type} - {tile_name}"
                                     ).add_to(m)
 
                         except Exception as e:
-                            st.error(f"Error loading raster: {e}")
+                            print(f"Error loading raster {tile_name}: {e}")
 
                 folium.LayerControl().add_to(m)
-                st_folium(m, width=800, height=600)
+                
+                # Handle Map Clicks
+                map_output = st_folium(m, width=800, height=600, returned_objects=["last_object_clicked"])
+                
+                if map_output['last_object_clicked']:
+                    clicked_props = map_output['last_object_clicked'].get('properties')
+                    if clicked_props and 'name' in clicked_props:
+                        clicked_veedel = clicked_props['name']
+                        if clicked_veedel != st.session_state['selected_veedel']:
+                            st.session_state['selected_veedel'] = clicked_veedel
+                            st.rerun()

@@ -9,41 +9,38 @@ from dotenv import load_dotenv
 load_dotenv()
 load_dotenv("DL_cologne_green/.env")
 
-def upload_to_hf(dataset_id, token=None, private=True, args=None):
-    """
-    Uploads processed data to a Hugging Face Dataset.
-    """
+def upload_to_hf(dataset_id, token=None, private=True, auto_confirm=False, force=False, folders_to_upload=None):
     if not token:
         token = os.getenv("HF_TOKEN")
     
     if not token:
-        print("Error: HF_TOKEN not found in environment variables or arguments.")
-        print("Please set HF_TOKEN in .env or pass it as an argument.")
+        print("❌ HF_TOKEN not found. Please set it in .env or pass as argument.")
         return
 
     api = HfApi(token=token)
     
-    # Create repo if it doesn't exist
+    # Create dataset if not exists
     try:
-        print(f"Creating/Checking dataset repository: {dataset_id}...")
-        create_repo(dataset_id, token=token, repo_type="dataset", private=private, exist_ok=True)
+        api.create_repo(repo_id=dataset_id, repo_type="dataset", private=private, exist_ok=True)
+        print(f"✅ Dataset repo {dataset_id} ready.")
     except Exception as e:
-        print(f"Error creating repo: {e}")
+        print(f"❌ Error creating repo: {e}")
         return
 
     # Define paths
     base_dir = Path("data")
-    folders_to_upload = ["raw", "processed", "stats", "boundaries"]
-    
+    if folders_to_upload is None:
+        folders_to_upload = ["raw", "processed", "boundaries", "stats"]
+
     print(f"Uploading data to {dataset_id}...")
     
-    for folder in folders_to_upload:
-        local_path = base_dir / folder
+    for folder_name in folders_to_upload:
+        local_path = base_dir / folder_name
         if not local_path.exists():
             print(f"Warning: {local_path} does not exist. Skipping.")
             continue
             
-        print(f"Uploading {folder}...")
+        print(f"Uploading {folder_name}...")
         # Check if folder already exists in repo to avoid re-uploading/hashing large data
         try:
             repo_files = api.list_repo_files(repo_id=dataset_id, repo_type="dataset")
@@ -60,7 +57,7 @@ def upload_to_hf(dataset_id, token=None, private=True, args=None):
                         print(f"Skipping {folder}...")
                         continue
         
-        print(f"Uploading {folder}...")
+        print(f"Uploading {folder_name}...")
         try:
             # Use upload_folder with multi_commits=True for large datasets
             # This is the recommended way to handle large uploads in newer hf_hub versions
@@ -68,19 +65,20 @@ def upload_to_hf(dataset_id, token=None, private=True, args=None):
                 folder_path=str(local_path),
                 repo_id=dataset_id,
                 repo_type="dataset",
-                path_in_repo=f"data/{folder}",
-                token=token,
-                multi_commits=True
+                path_in_repo=f"data/{folder_name}",
+                multi_commits=True,
+                run_as_future=False
             )
+            print(f"✅ Uploaded {folder_name}!")
         except Exception as e:
-            print(f"Error uploading {folder}: {e}")
+            print(f"Error uploading {folder_name}: {e}")
             # Fallback without multi_commits if it fails (e.g. older version)
             print("Retrying without multi_commits...")
             api.upload_folder(
                 folder_path=str(local_path),
                 repo_id=dataset_id,
                 repo_type="dataset",
-                path_in_repo=f"data/{folder}",
+                path_in_repo=f"data/{folder_name}",
                 token=token
             )
         
@@ -91,9 +89,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Upload Cologne Green data to Hugging Face.")
     parser.add_argument("--dataset", type=str, help="Dataset ID (e.g., username/cologne-green-data)")
     parser.add_argument("--token", type=str, help="Hugging Face Write Token")
-    parser.add_argument("--public", action="store_true", help="Make dataset public (default is private)")
-    parser.add_argument("--auto", action="store_true", help="Automatically accept default dataset ID")
-    parser.add_argument("--force", action="store_true", help="Force upload even if files exist (skip prompt)")
+    parser.add_argument("--public", action="store_true", help="Make dataset public")
+    parser.add_argument("--auto", action="store_true", help="Auto-confirm uploads")
+    parser.add_argument("--force", action="store_true", help="Force upload even if files exist")
+    parser.add_argument("--folders", nargs="+", default=["raw", "processed", "boundaries", "stats", "metadata"], help="Folders to upload") # (skip prompt)
     
     args = parser.parse_args()
     
@@ -117,4 +116,11 @@ if __name__ == "__main__":
         else:
             dataset_id = input(f"Enter Dataset ID [{default_id}]: ").strip() or default_id
 
-    upload_to_hf(dataset_id, token=args.token, private=not args.public, args=args)
+    upload_to_hf(
+        dataset_id=dataset_id, 
+        token=args.token, 
+        private=not args.public, 
+        auto_confirm=args.auto,
+        force=args.force,
+        folders_to_upload=args.folders
+    )
