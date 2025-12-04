@@ -11,7 +11,10 @@ from streamlit_folium import st_folium
 import geopandas as gpd
 import os
 import shapely.wkb
+import matplotlib.colors as mcolors
+from rasterio.enums import Resampling
 from dotenv import load_dotenv
+from huggingface_hub import HfFileSystem
 
 # Load environment variables for local testing
 load_dotenv()
@@ -24,15 +27,26 @@ st.title("🌿 GreenCologne (Cloud Dashboard)")
 # --- Configuration ---
 # --- Configuration ---
 # Get secrets from Streamlit secrets (HF Spaces) or Environment Variables
-HF_TOKEN = st.secrets.get("HF_TOKEN", os.getenv("HF_TOKEN"))
-DATASET_ID = st.secrets.get("DATASET_ID", os.getenv("DATASET_ID", "Rahul-fix/cologne-green-data")) # Default to uploaded dataset
+try:
+    HF_TOKEN = st.secrets.get("HF_TOKEN")
+    DATASET_ID = st.secrets.get("DATASET_ID")
+except Exception:
+    HF_TOKEN = None
+    DATASET_ID = None
+
+# Fallback to environment variables (loaded via dotenv)
+if not HF_TOKEN:
+    HF_TOKEN = os.getenv("HF_TOKEN")
+
+if not DATASET_ID:
+    DATASET_ID = os.getenv("DATASET_ID", "Rahul-fix/cologne-green-data")
 
 if not HF_TOKEN:
     st.warning("⚠️ HF_TOKEN not found. If the dataset is private, you must set it in Secrets or .env.")
 
-# Paths (HTTPFS style for DuckDB with HF)
-# Use the 'resolve/main' URL structure for raw file access
-BASE_URL = f"https://huggingface.co/datasets/{DATASET_ID}/resolve/main"
+# Paths (HfFileSystem style)
+# Use the 'hf://' protocol which maps to the registered filesystem
+BASE_URL = f"hf://datasets/{DATASET_ID}"
 
 STATS_FILE = f"{BASE_URL}/data/stats/stats.parquet"
 DISTRICTS_FILE = f"{BASE_URL}/data/boundaries/Stadtviertel.parquet"
@@ -46,15 +60,10 @@ def get_db_connection():
     con.execute("INSTALL spatial; LOAD spatial;")
     con.execute("INSTALL httpfs; LOAD httpfs;")
     
-    # Configure HTTP access (Header for private datasets)
-    if HF_TOKEN:
-        con.execute(f"SET s3_region='us-east-1';") # Dummy region often needed for S3 compat if used, but for HTTP:
-        # For simple HTTPFS with DuckDB, we might need to pass headers if private.
-        # DuckDB's HTTPFS supports headers.
-        con.execute(f"SET http_keep_alive=false;") # Sometimes helps
-        # Setting the header for all requests to huggingface.co
-        # Note: DuckDB < 0.10 might differ, but generally:
-        con.execute(f"SET http_headers={{'Authorization': 'Bearer {HF_TOKEN}'}};")
+    # Configure Hugging Face FileSystem
+    # This avoids manual HTTP header configuration and handles auth robustly
+    fs = HfFileSystem(token=HF_TOKEN)
+    con.register_filesystem(fs)
         
     return con
 
@@ -161,55 +170,157 @@ with tab1:
 
 with tab2:
     st.subheader("Satellite Imagery Analysis")
-    st.info("Note: Raster overlays (NDVI/Mask) require direct file access or signed URLs. Currently showing vector analysis only for speed.")
+    st.info("Note: Raster overlays are fetched directly from Hugging Face. Performance depends on your internet connection.")
     
-    # Create Map
-    # Center on Cologne
-    m = folium.Map(location=[50.9375, 6.9603], zoom_start=11, tiles="CartoDB positron")
+    # Find processed files (masks) - We need to list them from the filesystem
+    # Since we are using HfFileSystem, we can list files efficiently
+    @st.cache_data(ttl=3600)
+    def list_remote_files():
+        fs = HfFileSystem(token=HF_TOKEN)
+        # List processed files
+        processed_files = fs.glob(f"datasets/{DATASET_ID}/data/processed/*_mask.tif")
+        return [Path(f).stem.replace("_mask", "") for f in processed_files]
+
+    available_tiles = list_remote_files()
     
-    # Base Maps
-    folium.TileLayer(tiles="OpenStreetMap", name="OpenStreetMap", control=True, show=False).add_to(m)
-    folium.TileLayer(tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}", attr="Google", name="Satellite (Google)", overlay=False, control=True, show=False).add_to(m)
+    if not available_tiles:
+        st.warning("No processed images found in the dataset.")
+    else:
+        available_tiles = sorted(list(set(available_tiles)))
+        
+        # --- Tile Selection ---
+        selected_tile = st.selectbox("Select Tile", available_tiles)
+        
+        # Layer selection
+        layer_type = st.radio("Select Layer", ["NDVI", "Segmentation Mask", "Raw Satellite (RGB)"], horizontal=True)
+        
+        # Helper to construct remote URL
+        def get_remote_url(tile_name, file_type):
+            # file_type: 'mask', 'ndvi', 'raw'
+            if file_type == 'raw':
+                return f"https://huggingface.co/datasets/{DATASET_ID}/resolve/main/data/raw/{tile_name}.jp2"
+            elif file_type == 'mask':
+                return f"https://huggingface.co/datasets/{DATASET_ID}/resolve/main/data/processed/{tile_name}_mask.tif"
+            elif file_type == 'ndvi':
+                return f"https://huggingface.co/datasets/{DATASET_ID}/resolve/main/data/processed/{tile_name}_ndvi.tif"
+            return None
 
-    # District Analysis
-    folium.Choropleth(
-        geo_data=gdf_districts,
-        name="District Analysis (Green %)",
-        data=gdf_districts,
-        columns=['name', 'green_pct'],
-        key_on='feature.properties.name',
-        fill_color='RdYlGn',
-        fill_opacity=0.6,
-        line_opacity=0.2,
-        legend_name='Green Space Percentage (%)',
-        highlight=True
-    ).add_to(m)
-    
-    folium.GeoJson(
-        gdf_districts,
-        name="District Tooltips",
-        style_function=lambda x: {'fillColor': '#00000000', 'color': '#00000000'},
-        tooltip=folium.GeoJsonTooltip(
-            fields=['name', 'green_pct', 'green_area_m2'],
-            aliases=['District:', 'Green %:', 'Green Area (m²):'],
-            localize=True,
-            sticky=False
-        )
-    ).add_to(m)
+        # Helper to get bounds
+        def get_remote_bounds(tile_name):
+            # Try mask first, then raw
+            url = get_remote_url(tile_name, 'mask')
+            try:
+                with rasterio.open(url) as src:
+                    return src.bounds, src.crs
+            except Exception:
+                # Try raw
+                url = get_remote_url(tile_name, 'raw')
+                try:
+                    with rasterio.open(url) as src:
+                        return src.bounds, src.crs
+                except Exception:
+                    return None, None
 
-    # City Outline
-    if not gdf_city.empty:
-        folium.GeoJson(
-            gdf_city,
-            name="Cologne City Outline",
-            style_function=lambda x: {
-                'fillColor': '#3388ff',
-                'fillOpacity': 0.1,
-                'color': '#222222',
-                'weight': 2,
-                'opacity': 0.8
-            }
-        ).add_to(m)
+        bounds = None
+        crs = None
+        if selected_tile:
+            with st.spinner(f"Fetching metadata for {selected_tile}..."):
+                 bounds, crs = get_remote_bounds(selected_tile)
+        
+        if bounds and crs:
+            # Reproject bounds to WGS84 for Folium
+            try:
+                wgs84_bounds = transform_bounds(crs, 'EPSG:4326', *bounds)
+            except Exception:
+                # Fallback for "EngineeringCRS"
+                try:
+                    src_crs = rasterio.crs.CRS.from_epsg(25832)
+                    wgs84_bounds = transform_bounds(src_crs, 'EPSG:4326', *bounds)
+                except Exception as e:
+                    st.error(f"Failed to reproject bounds: {e}")
+                    wgs84_bounds = None
 
-    folium.LayerControl().add_to(m)
-    st_folium(m, width=800, height=600)
+            if wgs84_bounds:
+                center_lat = (wgs84_bounds[1] + wgs84_bounds[3]) / 2
+                center_lon = (wgs84_bounds[0] + wgs84_bounds[2]) / 2
+                
+                m = folium.Map(location=[center_lat, center_lon], zoom_start=14, tiles="CartoDB positron")
+                
+                # Base Maps
+                folium.TileLayer(tiles="OpenStreetMap", name="OpenStreetMap", control=True, show=False).add_to(m)
+                folium.TileLayer(tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}", attr="Google", name="Satellite (Google)", overlay=False, control=True, show=False).add_to(m)
+
+                # Overlay Logic
+                overlay_url = None
+                if layer_type == "Segmentation Mask":
+                    overlay_url = get_remote_url(selected_tile, 'mask')
+                elif layer_type == "NDVI":
+                    overlay_url = get_remote_url(selected_tile, 'ndvi')
+                elif layer_type == "Raw Satellite (RGB)":
+                    overlay_url = get_remote_url(selected_tile, 'raw')
+                
+                if overlay_url:
+                    with st.spinner(f"Loading {layer_type}..."):
+                        try:
+                            with rasterio.open(overlay_url) as src:
+                                # Downsample for performance
+                                MAX_DIM = 800
+                                scale = MAX_DIM / max(src.width, src.height)
+                                if scale < 1:
+                                    out_shape = (src.count, int(src.height * scale), int(src.width * scale))
+                                    data = src.read(out_shape=out_shape, resampling=rasterio.enums.Resampling.nearest if layer_type == "Segmentation Mask" else rasterio.enums.Resampling.bilinear)
+                                else:
+                                    data = src.read()
+                                
+                                image_data = None
+                                opacity = 0.7
+                                
+                                if layer_type == "Segmentation Mask":
+                                    mask_data = data[0]
+                                    rgba = np.zeros((mask_data.shape[0], mask_data.shape[1], 4), dtype=np.uint8)
+                                    rgba[mask_data == 1] = [0, 100, 0, 255] # Trees
+                                    rgba[mask_data == 2] = [144, 238, 144, 255] # Low Veg
+                                    image_data = rgba
+                                    opacity = 0.9
+                                    
+                                elif layer_type == "NDVI":
+                                    # If NDVI file exists, it's single band float
+                                    # If we are computing on the fly from raw, we need raw logic
+                                    # Here we assume pre-calculated NDVI exists or we read raw
+                                    if src.count == 1:
+                                        ndvi_data = data[0]
+                                        # Handle Int16 scaling if needed
+                                        if ndvi_data.dtype == 'int16':
+                                            ndvi_data = ndvi_data.astype('float32') * 0.0001
+                                            
+                                        import matplotlib.colors as mcolors
+                                        norm = mcolors.Normalize(vmin=-1, vmax=1)
+                                        cmap = plt.get_cmap('RdYlGn')
+                                        image_data = cmap(norm(ndvi_data))
+                                    else:
+                                        st.warning("NDVI file has unexpected band count.")
+
+                                elif layer_type == "Raw Satellite (RGB)":
+                                    if data.shape[0] >= 3:
+                                        r = data[0]; g = data[1]; b = data[2]
+                                        rgb = np.dstack((r, g, b))
+                                        if src.dtypes[0] == 'uint8':
+                                            image_data = rgb / 255.0
+                                        else:
+                                            p2, p98 = np.percentile(rgb, (2, 98))
+                                            image_data = np.clip((rgb - p2) / (p98 - p2), 0, 1)
+                                        opacity = 1.0
+
+                                if image_data is not None:
+                                    folium.raster_layers.ImageOverlay(
+                                        image=image_data,
+                                        bounds=[[wgs84_bounds[1], wgs84_bounds[0]], [wgs84_bounds[3], wgs84_bounds[2]]],
+                                        opacity=opacity,
+                                        name=f"{layer_type} - {selected_tile}"
+                                    ).add_to(m)
+
+                        except Exception as e:
+                            st.error(f"Error loading raster: {e}")
+
+                folium.LayerControl().add_to(m)
+                st_folium(m, width=800, height=600)

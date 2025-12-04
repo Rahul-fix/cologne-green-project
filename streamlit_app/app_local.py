@@ -269,16 +269,19 @@ with tab2:
         
         if bounds and crs:
             # Reproject bounds to WGS84 for Folium
+            # Reproject bounds to WGS84 for Folium
             try:
+                # Try standard transformation first
                 wgs84_bounds = transform_bounds(crs, 'EPSG:4326', *bounds)
-            except Exception:
-                # Fallback for weird CRS definitions (like the EngineeringCRS issue)
-                # Assuming it is actually EPSG:25832 (ETRS89 UTM 32N) which is standard for NRW
+            except Exception as e:
+                # Fallback for "EngineeringCRS" or other weird definitions
+                # We know the data is in ETRS89 / UTM zone 32N (EPSG:25832)
+                # print(f"CRS Warning: {e}. Forcing EPSG:25832.")
                 try:
                     src_crs = rasterio.crs.CRS.from_epsg(25832)
                     wgs84_bounds = transform_bounds(src_crs, 'EPSG:4326', *bounds)
-                except Exception as e:
-                    st.error(f"Failed to reproject bounds: {e}")
+                except Exception as e2:
+                    st.error(f"Failed to reproject bounds: {e2}")
                     wgs84_bounds = None
 
             if wgs84_bounds:
