@@ -62,18 +62,20 @@ def upload_to_hf(dataset_id, token=None, private=True, args=None):
         
         print(f"Uploading {folder}...")
         try:
-            # Use upload_large_folder for better stability with large datasets
-            # This handles chunking and retries automatically
-            api.upload_large_folder(
+            # Use upload_folder with multi_commits=True for large datasets
+            # This is the recommended way to handle large uploads in newer hf_hub versions
+            api.upload_folder(
                 folder_path=str(local_path),
                 repo_id=dataset_id,
                 repo_type="dataset",
                 path_in_repo=f"data/{folder}",
-                token=token
+                token=token,
+                multi_commits=True
             )
-        except AttributeError:
-            # Fallback for older huggingface_hub versions
-            print("Warning: upload_large_folder not found. Falling back to upload_folder.")
+        except Exception as e:
+            print(f"Error uploading {folder}: {e}")
+            # Fallback without multi_commits if it fails (e.g. older version)
+            print("Retrying without multi_commits...")
             api.upload_folder(
                 folder_path=str(local_path),
                 repo_id=dataset_id,
