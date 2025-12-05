@@ -14,724 +14,365 @@ from streamlit_folium import st_folium
 from shapely.geometry import box
 import geopandas as gpd
 
+# 1. Page Configuration
 st.set_page_config(page_title="GreenCologne (Local)", layout="wide")
-
 st.title("🌿 GreenCologne (Local Preview)")
 
-# Paths
+# 2. Paths & Constants
 DATA_DIR = Path("data")
 STATS_FILE = DATA_DIR / "stats" / "stats.parquet"
-DISTRICTS_FILE = DATA_DIR / "boundaries" / "Stadtviertel.parquet"
+QUARTERS_FILE = DATA_DIR / "boundaries" / "Stadtviertel.parquet"
 BOROUGHS_FILE = DATA_DIR / "boundaries" / "Stadtbezirke.parquet"
 PROCESSED_DIR = DATA_DIR / "processed"
 TILES_METADATA_FILE = DATA_DIR / "metadata" / "cologne_tiles.csv"
+
+# FLAIR-HUB Color Palette
+FLAIR_COLORS = {
+    1: [219, 14, 154, 255],     # Building
+    2: [255, 0, 0, 255],        # Impervious
+    3: [143, 85, 41, 255],      # Barren
+    4: [0, 255, 0, 255],        # Grass
+    5: [32, 105, 10, 255],      # Brush
+    6: [90, 31, 10, 255],       # Agriculture
+    7: [48, 25, 23, 255],       # Tree
+    8: [13, 227, 237, 255],     # Water
+    9: [2, 161, 9, 255],        # Herbaceous
+    10: [136, 68, 145, 255],    # Shrub
+    11: [55, 23, 40, 255],      # Moss
+    12: [173, 201, 198, 255],   # Lichen
+    13: [0, 0, 0, 0],           # Unknown
+}
 
 if not STATS_FILE.exists():
     st.error(f"Stats file not found at {STATS_FILE}. Run scripts/05_generate_stats.py first.")
     st.stop()
 
-# --- Data Loading with DuckDB ---
+# 3. Data Loading Functions
 @st.cache_data
-def load_stats():
-    con = duckdb.connect()
-    query = f"SELECT * FROM '{STATS_FILE}'"
-    df = con.execute(query).df()
-    con.close()
-    return df
-
-df = load_stats()
-
-@st.cache_data
-def load_districts():
-    if not DISTRICTS_FILE.exists():
-        return None
-    import geopandas as gpd
-    gdf = gpd.read_parquet(DISTRICTS_FILE)
-    if gdf.crs != "EPSG:4326":
-        gdf = gdf.to_crs("EPSG:4326")
+def load_quarters_with_stats():
+    # Load Boundaries
+    if not QUARTERS_FILE.exists(): return None
+    gdf = gpd.read_parquet(QUARTERS_FILE)
+    if gdf.crs != "EPSG:4326": gdf = gdf.to_crs("EPSG:4326")
+    
+    # Load Stats
+    try:
+        con = duckdb.connect()
+        df_s = con.execute(f"SELECT * FROM '{STATS_FILE}'").df()
+        con.close()
+        
+        # Merge
+        if 'name' in gdf.columns and 'name' in df_s.columns:
+            gdf = gdf.merge(df_s, on='name', how='left')
+            if 'green_area_m2' in gdf.columns:
+                gdf['green_area_m2'] = gdf['green_area_m2'].fillna(0)
+    except Exception as e:
+        st.error(f"Error loading stats: {e}")
+    
     return gdf
 
-# --- Session State Initialization ---
+@st.cache_data
+def load_boroughs():
+    if not BOROUGHS_FILE.exists(): return None
+    gdf = gpd.read_parquet(BOROUGHS_FILE)
+    if gdf.crs != "EPSG:4326": gdf = gdf.to_crs("EPSG:4326")
+    if 'STB_NAME' in gdf.columns: gdf = gdf.rename(columns={'STB_NAME': 'name'})
+    return gdf
+
+@st.cache_data
+def get_tile_to_veedel_mapping():
+    if not TILES_METADATA_FILE.exists() or not QUARTERS_FILE.exists(): return {}
+    tiles_df = pd.read_csv(TILES_METADATA_FILE)
+    geometries = []
+    for _, row in tiles_df.iterrows():
+        e, n = row['Koordinatenursprung_East'], row['Koordinatenursprung_North']
+        geometries.append(box(e, n, e + 1000, n + 1000))
+    tiles_gdf = gpd.GeoDataFrame(tiles_df, geometry=geometries, crs="EPSG:25832")
+    
+    quarters_gdf = gpd.read_parquet(QUARTERS_FILE)
+    if quarters_gdf.crs != "EPSG:25832": quarters_gdf = quarters_gdf.to_crs("EPSG:25832")
+        
+    joined = gpd.sjoin(tiles_gdf, quarters_gdf, how="inner", predicate="intersects")
+    return joined.groupby('name')['Kachelname'].apply(list).to_dict()
+
+# Load Data
+gdf_quarters = load_quarters_with_stats()
+gdf_boroughs = load_boroughs()
+tile_mapping = get_tile_to_veedel_mapping()
+# df_stats is now implied in gdf_quarters, but if we need a pure df for charts:
+df_stats = pd.DataFrame(gdf_quarters.drop(columns='geometry')) if gdf_quarters is not None else pd.DataFrame()
+
+# 4. State Management
 if 'selected_veedel' not in st.session_state:
     st.session_state['selected_veedel'] = "All"
 if 'map_center' not in st.session_state:
     st.session_state['map_center'] = [50.9375, 6.9603] # Cologne Center
 if 'map_zoom' not in st.session_state:
-    st.session_state['map_zoom'] = 11
+    st.session_state['map_zoom'] = 10 # Whole city view
 
-def update_view_for_veedel():
-    """Updates map center and zoom based on selected veedel"""
-    veedel = st.session_state['selected_veedel']
-    if veedel == "All":
-        st.session_state['map_center'] = [50.9375, 6.9603]
-        st.session_state['map_zoom'] = 11
-    else:
-        # Calculate centroid/bounds for the veedel
-        # We need the geometry. We can get it from the districts file.
-        # Since we load it later, we might need to load it here or cache it.
-        pass # Logic implemented inside the main flow where GDF is available
+# 5. Layout# --- Layout ---
+col_map, col_details = st.columns([0.65, 0.35], gap="medium")
 
-@st.cache_data
-def get_tile_to_veedel_mapping():
-    """
-    Creates a mapping of Veedel -> List of Tiles based on spatial intersection.
-    """
-    if not TILES_METADATA_FILE.exists() or not DISTRICTS_FILE.exists():
-        return {}
-
-    # Load Tiles Metadata
-    tiles_df = pd.read_csv(TILES_METADATA_FILE)
+with col_details:
+    st.markdown("### GreenCologne Analysis")
     
-    # Create geometries for tiles (assuming 1km x 1km)
-    from shapely.geometry import box
-    import geopandas as gpd
+    # Tabs for Options and Statistics
+    tab_opts, tab_stats = st.tabs(["🛠️ Options", "📊 Statistics"])
     
-    geometries = []
-    for _, row in tiles_df.iterrows():
-        e = row['Koordinatenursprung_East']
-        n = row['Koordinatenursprung_North']
-        # DOP10 tiles are 1km x 1km
-        geometries.append(box(e, n, e + 1000, n + 1000))
+    veedel_list = ["All"] + sorted(gdf_quarters['name'].unique().tolist()) if gdf_quarters is not None and not gdf_quarters.empty else ["All"]
     
-    tiles_gdf = gpd.GeoDataFrame(tiles_df, geometry=geometries, crs="EPSG:25832")
-    
-    # Load Districts
-    districts_gdf = gpd.read_parquet(DISTRICTS_FILE)
-    if districts_gdf.crs != "EPSG:25832":
-        districts_gdf = districts_gdf.to_crs("EPSG:25832")
-        
-    # Spatial Join
-    joined = gpd.sjoin(tiles_gdf, districts_gdf, how="inner", predicate="intersects")
-    
-    # Create mapping: Veedel -> [Tile Names]
-    mapping = joined.groupby('name')['Kachelname'].apply(list).to_dict()
-    return mapping
-
-tile_mapping = get_tile_to_veedel_mapping()
-
-# --- Tabs ---
-tab1, tab2 = st.tabs(["📊 Statistics", "🗺️ Map Visualization"])
-
-with tab1:
-    st.subheader("Green Area by Veedel (Sample Data)")
-
-    if df.empty:
-        st.warning("No data available.")
-    else:
-        # Metrics
-        total_green_m2 = df['green_area_m2'].sum()
-        total_green_ha = total_green_m2 / 10000
-        st.metric("Total Green Area (Sample)", f"{total_green_ha:.2f} ha")
-
-        # Chart
-        fig = px.bar(
-            df.sort_values('green_area_m2', ascending=False), 
-            x='name', 
-            y='green_area_m2',
-            title="Green Area per District (m²)",
-            labels={'green_area_m2': 'Green Area (m²)', 'name': 'District'},
-            color='green_area_m2',
-            color_continuous_scale='Greens'
-        )
-        st.plotly_chart(fig)
-
-        with st.expander("View Raw Data"):
-            st.dataframe(df)
-
-with tab2:
-    st.subheader("Satellite Imagery Analysis")
-    
-    # Find processed files (masks)
-    mask_files = list(PROCESSED_DIR.glob("*_mask.tif"))
-    
-    if not mask_files:
-        st.warning("No processed images found in data/processed/")
-    else:
-        # Get all available processed tiles
-        available_tiles = set(f.stem.replace("_mask", "") for f in mask_files)
-        
-        # --- Veedel Selection ---
-        # Get all districts to show in dropdown, even if no tiles
-        all_districts_gdf = load_districts()
-        
-        # Calculate available tiles per Veedel for the dropdown
-        veedel_counts = {}
-        if all_districts_gdf is not None:
-            all_names = sorted(all_districts_gdf['name'].tolist())
-            
-            # Get all available local tiles
-            raw_files = list((DATA_DIR / "raw").glob("*.jp2"))
-            available_raw = set(f.stem for f in raw_files)
-            all_available_local = available_tiles.union(available_raw)
-            
-            for name in all_names:
-                expected = set(tile_mapping.get(name, []))
-                available_count = len([t for t in expected if t in all_available_local])
-                veedel_counts[name] = available_count
-        
-        # Create options with counts
-        # Sort by available count desc, then name
-        sorted_names = sorted(veedel_counts.keys(), key=lambda x: (-veedel_counts[x], x))
-        
-        veedel_options = ["All"] + [f"{name} ({veedel_counts[name]})" for name in sorted_names]
-        
-        # Map back to original names for logic
-        option_to_name = {f"{name} ({veedel_counts[name]})": name for name in sorted_names}
-        option_to_name["All"] = "All"
-        
-        # Map back to original names for logic
-        option_to_name = {f"{name} ({veedel_counts[name]})": name for name in sorted_names}
-        option_to_name["All"] = "All"
-        
-        # Initialize last selection state if needed
-        if 'last_selected_veedel' not in st.session_state:
-            st.session_state['last_selected_veedel'] = "All"
-
-        selected_option = st.selectbox(
-            "Select Veedel (District)", 
-            veedel_options, 
-            key='selected_veedel_option'
-        )
-        
-        selected_veedel = option_to_name[selected_option]
-        
-        # Check if selection changed to update map center
-        if selected_veedel != st.session_state['last_selected_veedel']:
-            st.session_state['last_selected_veedel'] = selected_veedel
-            
-            if selected_veedel == "All":
+    # --- Options Tab ---
+    with tab_opts:
+        # Veedel Selection
+        def on_veedel_change():
+            sel = st.session_state['selected_veedel_widget']
+            st.session_state['selected_veedel'] = sel
+            if sel == "All":
                 st.session_state['map_center'] = [50.9375, 6.9603]
-                st.session_state['map_zoom'] = 11
-            else:
-                gdf = load_districts()
-                if gdf is not None:
-                    selected_geom = gdf[gdf['name'] == selected_veedel]
-                    if not selected_geom.empty:
-                        # Reproject to projected CRS for accurate centroid
-                        geom_projected = selected_geom.to_crs("EPSG:25832")
-                        centroid = geom_projected.geometry.centroid.iloc[0]
-                        
-                        # Project centroid back to WGS84
-                        import pyproj
-                        from shapely.ops import transform
-                        project_to_wgs84 = pyproj.Transformer.from_crs("EPSG:25832", "EPSG:4326", always_xy=True).transform
-                        centroid_wgs84 = transform(project_to_wgs84, centroid)
-                        
-                        st.session_state['map_center'] = [centroid_wgs84.y, centroid_wgs84.x]
-                        st.session_state['map_zoom'] = 14
-        
-        # Filter tiles based on Veedel
+                st.session_state['map_zoom'] = 10
+            elif gdf_quarters is not None and not gdf_quarters.empty:
+                 match = gdf_quarters[gdf_quarters['name'] == sel]
+                 if not match.empty:
+                     centroid = match.geometry.centroid.iloc[0]
+                     st.session_state['map_center'] = [centroid.y, centroid.x]
+                     st.session_state['map_zoom'] = 13 # Zoom in closer
+
+        selected_veedel = st.selectbox(
+            "Select Quarter (Veedel/Stadtviertel):", 
+            veedel_list, 
+            key='selected_veedel_widget', 
+            on_change=on_veedel_change,
+            index=veedel_list.index(st.session_state['selected_veedel']) if st.session_state['selected_veedel'] in veedel_list else 0
+        )
+
+        # Tiles Logic
+        current_veedel_tiles = []
         if selected_veedel != "All":
             veedel_tiles = set(tile_mapping.get(selected_veedel, []))
-            
-            if not veedel_tiles:
-                 st.info(f"No tiles found for {selected_veedel} in the current dataset.")
-            
-            # Let's expand available_tiles to include raw files if we are in on-demand mode
-            raw_files = list((DATA_DIR / "raw").glob("*.jp2"))
-            available_raw = set(f.stem for f in raw_files)
-            all_available = available_tiles.union(available_raw)
-            
-            filtered_tiles = [t for t in veedel_tiles if t in all_available]
-            
-            if not filtered_tiles and veedel_tiles:
-                 st.warning(f"Tiles exist for {selected_veedel} but are not downloaded/processed yet.")
-                 tile_options = []
-            elif not filtered_tiles:
-                 tile_options = []
-            else:
-                tile_options = sorted(filtered_tiles)
+            # For local, check existence
+            filtered_tiles = []
+            for t in veedel_tiles:
+                 if (DATA_DIR / "raw" / f"{t}.jp2").exists() or (PROCESSED_DIR / f"{t}_mask.tif").exists():
+                     filtered_tiles.append(t)
+            current_veedel_tiles = sorted(filtered_tiles)
         else:
-            # Show all processed + raw
-            raw_files = list((DATA_DIR / "raw").glob("*.jp2"))
-            available_raw = set(f.stem for f in raw_files)
-            tile_options = sorted(list(available_tiles.union(available_raw)))
+            # "All" mode: Show ALL available tiles (could be many)
+            # For local, scan directory? Or use mapping keys?
+            # Let's take all from mapping for now but limit downstream
+            all_t = set()
+            for k, v in tile_mapping.items():
+                all_t.update(v)
+            current_veedel_tiles = sorted(list(all_t))
 
-        selected_tile = st.selectbox("Select Tile", tile_options)
-        
-        # Option to show all tiles in the current list (filtered by Veedel)
-        show_all_tiles = st.checkbox("Show all listed tiles", value=True)
-        
-        tiles_to_display = []
-        if show_all_tiles:
-            # Increased limit for better visibility
-            MAX_TILES_TO_SHOW = 100
-            if len(tile_options) > MAX_TILES_TO_SHOW:
-                st.warning(f"Showing first {MAX_TILES_TO_SHOW} tiles out of {len(tile_options)} to avoid performance issues.")
-                tiles_to_display = tile_options[:MAX_TILES_TO_SHOW]
-            else:
-                tiles_to_display = tile_options
-        else:
-            if selected_tile:
-                tiles_to_display = [selected_tile]
-        
-        # Layer selection
-        layer_type = st.radio("Select Layer", ["NDVI", "Segmentation Mask (Green Highlight)", "Land Cover Classes", "Raw Satellite (RGB)"], horizontal=True)
-        
-        # FLAIR-HUB Color Mapping (from QML)
-        FLAIR_COLORS = {
-            0: [206, 112, 121, 255],   # building
-            1: [185, 226, 212, 255],   # greenhouse
-            2: [98, 208, 255, 255],    # swimming pool
-            3: [166, 170, 183, 255],   # impervious surface
-            4: [152, 119, 82, 255],    # pervious surface
-            5: [187, 176, 150, 255],   # bare soil
-            6: [51, 117, 161, 255],    # water
-            7: [233, 239, 254, 255],   # snow
-            8: [140, 215, 106, 255],   # herbaceous vegetation
-            9: [222, 207, 85, 255],    # agricultural land
-            10: [208, 163, 73, 255],   # plowed land
-            11: [176, 130, 144, 255],  # vineyard
-            12: [76, 145, 41, 255],    # deciduous
-            13: [18, 100, 33, 255],    # coniferous
-            14: [181, 195, 53, 255],   # brushwood
-            15: [228, 142, 77, 255],   # clear cut
-            16: [34, 34, 34, 255],     # ligneous
-            17: [34, 34, 34, 255],     # mixed
-            18: [34, 34, 34, 255],     # other
-        }
+        tile_options = ["- Select a Tile -"] + current_veedel_tiles
+        selected_tile = st.selectbox("Select Tile:", tile_options)
+        if selected_tile == "- Select a Tile -": selected_tile = None
 
-        # Paths
-        ndvi_path = PROCESSED_DIR / f"{selected_tile}_ndvi.tif"
-        mask_path = PROCESSED_DIR / f"{selected_tile}_mask.tif"
-        raw_path = DATA_DIR / "raw" / f"{selected_tile}.jp2"
+        # Layer Selection
+        layer_type = st.radio(
+            "Select Layer:",
+            ["Segmentation Mask (Green Highlight)", "Land Cover Classes", "NDVI", "Raw Satellite (RGB)"],
+            index=0
+        )
         
-        # Get bounds from the *selected* tile to center the map (or the first one if none selected)
-        # We still use selected_tile for centering logic
-        bounds = None
-        crs = None
-        
-        # Helper to get bounds for a tile
-        def get_tile_bounds(tile_name):
-            t_ndvi = PROCESSED_DIR / f"{tile_name}_ndvi.tif"
-            t_mask = PROCESSED_DIR / f"{tile_name}_mask.tif"
-            t_raw = DATA_DIR / "raw" / f"{tile_name}.jp2"
-            
-            ref = None
-            if t_mask.exists(): ref = t_mask
-            elif t_ndvi.exists(): ref = t_ndvi
-            elif t_raw.exists(): ref = t_raw
-            
-            if ref:
-                with rasterio.open(ref) as src:
-                    return src.bounds, src.crs
-            return None, None
+        st.info("ℹ️ Select a specific Veedel or Tile to view satellite imagery.")
 
-        if selected_tile:
-             bounds, crs = get_tile_bounds(selected_tile)
-        
-        if bounds and crs:
-            # Helper to sanitize CRS to avoid PROJ errors with EngineeringCRS
-            def sanitize_crs(input_crs):
-                try:
-                    # If it's already a known EPSG code, it's fine
-                    if input_crs.is_epsg_code:
-                        return input_crs
-                    
-                    # If it has a WKT that looks like EngineeringCRS, force EPSG:25832
-                    wkt = input_crs.to_wkt()
-                    if "EngineeringCRS" in wkt or "Unknown engineering datum" in wkt:
-                        return rasterio.crs.CRS.from_epsg(25832)
-                        
-                    # Fallback: If it's not EPSG and we are unsure, assume EPSG:25832 for this dataset
-                    # This is aggressive but necessary to stop the PROJ errors
-                    return rasterio.crs.CRS.from_epsg(25832)
-                except Exception:
-                    # If anything fails, return original and let it crash/log
-                    pass
-                return input_crs
-
-            # Reproject bounds to WGS84 for Folium
-            try:
-                # Try standard transformation first with sanitized CRS
-                safe_crs = sanitize_crs(crs)
-                wgs84_bounds = transform_bounds(safe_crs, 'EPSG:4326', *bounds)
-            except Exception as e:
-                # Fallback just in case
-                try:
-                    src_crs = rasterio.crs.CRS.from_epsg(25832)
-                    wgs84_bounds = transform_bounds(src_crs, 'EPSG:4326', *bounds)
-                except Exception as e2:
-                    st.error(f"Failed to reproject bounds: {e2}")
-                    wgs84_bounds = None
-
-            if wgs84_bounds:
-                # wgs84_bounds is (min_lon, min_lat, max_lon, max_lat)
+    # --- Stats Tab ---
+    with tab_stats:
+        if selected_veedel != "All" and gdf_quarters is not None and not gdf_quarters.empty:
+            row = gdf_quarters[gdf_quarters['name'] == selected_veedel]
+            if not row.empty:
+                st.markdown(f"#### {selected_veedel}")
+                area_m2 = row['green_area_m2'].values[0] if 'green_area_m2' in row else 0
+                area_ha = area_m2 / 10000
+                total_area_m2 = row['Shape_Area'].values[0] if 'Shape_Area' in row else 1
+                pct = (area_m2 / total_area_m2) * 100
                 
-                center_lat = (wgs84_bounds[1] + wgs84_bounds[3]) / 2
-                center_lon = (wgs84_bounds[0] + wgs84_bounds[2]) / 2
+                col_metric1, col_metric2 = st.columns(2)
+                col_metric1.metric("Green Area", f"{area_ha:.2f} ha")
+                col_metric2.metric("Green Coverage", f"{pct:.1f}%")
                 
-                # Create Map with Base Layer Options
-                # Use session state for center/zoom
-                m = folium.Map(
-                    location=st.session_state['map_center'], 
-                    zoom_start=st.session_state['map_zoom'], 
-                    tiles="CartoDB positron"
+                # Simple gauge chart using Plotly
+                fig_gauge = px.pie(
+                    names=['Green', 'Other'], 
+                    values=[area_m2, total_area_m2 - area_m2],
+                    color=['Green', 'Other'],
+                    color_discrete_map={'Green': 'green', 'Other': 'lightgray'},
+                    hole=0.6,
+                    title="Green Coverage"
                 )
+                fig_gauge.update_layout(height=300, margin=dict(t=30, b=0, l=0, r=0))
+                st.plotly_chart(fig_gauge, use_container_width=True)
                 
-                # Add other Base Maps
-                # Note: Adding them as TileLayers with control=True allows switching.
-                # We add them AFTER the map creation.
-                
-                folium.TileLayer(
-                    tiles="OpenStreetMap",
-                    name="OpenStreetMap",
-                    control=True,
-                    show=False 
-                ).add_to(m)
-                
-                # Google Satellite (Hybrid)
-                folium.TileLayer(
-                    tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
-                    attr="Google",
-                    name="Satellite (Google)",
-                    overlay=False,
-                    control=True,
-                    show=False
-                ).add_to(m)
+        elif gdf_quarters is not None and not gdf_quarters.empty:
+             st.markdown("#### City Overview")
+             total_ha = gdf_quarters['green_area_m2'].sum() / 10000 if 'green_area_m2' in gdf_quarters.columns else 0
+             st.metric("Total Green Area", f"{total_ha:.2f} ha")
+             
+             # Top 10 Chart
+             top_10 = gdf_quarters.sort_values('green_area_m2', ascending=False).head(10)
+             fig = px.bar(
+                top_10, 
+                x='name', 
+                y='green_area_m2',
+                title="Top 10 Greenest Quarters",
+                labels={'green_area_m2': 'Green Area (m²)', 'name': ''},
+                color='green_area_m2',
+                color_continuous_scale='Greens'
+            )
+             fig.update_layout(height=400, margin=dict(l=0, r=0))
+             st.plotly_chart(fig, use_container_width=True)
 
-                # --- District Analysis Layer ---
-                # Load boundaries
-                gdf = load_districts()
-                if gdf is not None:
-                    # Merge with stats to get green percentage
-                    
-                    # Merge with stats to get green percentage
-                    # df has 'name' and 'green_area_m2'
-                    # gdf has 'name' and 'Shape_Area'
-                    
-                    # Join
-                    merged_gdf = gdf.merge(df, on='name', how='left')
-                    
-                    # Calculate Percentage
-                    # Handle missing data (fill with 0)
-                    merged_gdf['green_area_m2'] = merged_gdf['green_area_m2'].fillna(0)
-                    
-                    # Calculate percentage (Shape_Area is in m2)
-                    merged_gdf['green_pct'] = (merged_gdf['green_area_m2'] / merged_gdf['Shape_Area']) * 100
-                    
-                    # Create Choropleth
-                    # Create Interactive GeoJson Layer
-                    # We use GeoJson instead of Choropleth for better click handling
-                    
-                    # Define style function
-                    def style_function(feature):
-                        # Basic style
-                        return {
-                            'fillColor': '#ff000000', # Transparent fill by default
-                            'color': 'black',
-                            'weight': 1,
-                            'fillOpacity': 0.0
-                        }
+# --- Map Logic ---
+with col_map:
+    m = folium.Map(location=st.session_state['map_center'], zoom_start=st.session_state['map_zoom'], tiles="CartoDB positron")
+    
+    folium.TileLayer(tiles="OpenStreetMap", name="OpenStreetMap", control=True, show=False).add_to(m)
+    folium.TileLayer(tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}", attr="Google", name="Satellite (Google)", overlay=False, control=True, show=False).add_to(m)
 
-                    # Highlight function
-                    def highlight_function(feature):
-                        return {
-                            'fillColor': '#ffff00',
-                            'color': 'black',
-                            'weight': 2,
-                            'fillOpacity': 0.3
-                        }
-
-                    # Add the layer
-                    geojson_layer = folium.GeoJson(
-                        merged_gdf,
-                        name="Districts (Click to Select)",
-                        style_function=lambda x: {
-                            'fillColor': 'green' if x['properties']['green_pct'] > 0 else 'gray',
-                            'color': 'black',
-                            'weight': 1,
-                            'fillOpacity': 0.4
-                        },
-                        highlight_function=lambda x: {'weight': 3, 'color': 'blue'},
-                        tooltip=folium.GeoJsonTooltip(
-                            fields=['name', 'green_pct', 'green_area_m2'],
-                            aliases=['District:', 'Green %:', 'Green Area (m²):'],
-                            localize=True
-                        ),
-                        popup=folium.GeoJsonPopup(fields=['name'], labels=False) # Popup helps with clicking
-                    )
-                    geojson_layer.add_to(m)
-
-                    # Update map view if a specific veedel is selected
-                    if selected_veedel != "All":
-                        # Find the geometry
-                        selected_geom = merged_gdf[merged_gdf['name'] == selected_veedel]
-                        if not selected_geom.empty:
-                            # Get centroid
-                            # Get centroid (reproject to projected CRS first for accuracy and to avoid warning)
-                            # Use EPSG:25832 (UTM 32N)
-                            geom_projected = selected_geom.to_crs("EPSG:25832")
-                            centroid_projected = geom_projected.geometry.centroid.iloc[0]
-                            
-                            # Transform back to WGS84 for map centering if needed, or just use the projected one if we were using it for something else.
-                            # But wait, we aren't using 'centroid' variable here for anything?
-                            # Ah, looking at the code, 'centroid' is assigned but 'pass' follows. 
-                            # It seems this block is just a placeholder or leftover.
-                            # However, to silence the warning, we should fix the calculation or remove it if unused.
-                            # The comment says "Update session state if it was a manual selection... Actually, we should just update the map object here... pass".
-                            # So it IS unused in this specific block.
-                            # But let's fix it anyway in case it's used later or to be clean.
-                            
-                            # Actually, if it's unused, removing it is better.
-                            # But maybe I should check if it's used later?
-                            # The variable 'centroid' is local to this if block.
-                            # Let's just fix the calculation to be correct and silent.
-                            
-                            from shapely.ops import transform
-                            import pyproj
-                            
-                            # We can just use the projected centroid and convert back to 4326
-                            project_to_wgs84 = pyproj.Transformer.from_crs("EPSG:25832", "EPSG:4326", always_xy=True).transform
-                            centroid = transform(project_to_wgs84, centroid_projected)
-                            # Update session state if it was a manual selection (not map click which is handled later)
-                            # Actually, we should just update the map object here, but st_folium doesn't support dynamic zoom updates easily without reruns.
-                            # We rely on the session state being passed to folium.Map()
-                            pass
-
-                # --- City Outline Layer ---
-                # Load Stadtbezirk (Boroughs) to create city outline
-                # Note: File was saved as Stadtbezirke.parquet in conversion script
-                boroughs_path = BOROUGHS_FILE
-                if boroughs_path.exists():
-                    import geopandas as gpd
-                    boroughs_gdf = gpd.read_parquet(boroughs_path)
-                    
-                    if boroughs_gdf.crs != "EPSG:4326":
-                        boroughs_gdf = boroughs_gdf.to_crs("EPSG:4326")
-                    
-                    # Dissolve to get the outer boundary of Cologne
-                    # Add a constant column to dissolve all into one
-                    boroughs_gdf['common'] = 1
-                    city_boundary = boroughs_gdf.dissolve(by='common')
-                    
-                    # Fix topology artifacts (broken lines) by buffering
-                    # Reproject to a projected CRS (UTM 32N - EPSG:25832) for correct buffering
-                    city_boundary = city_boundary.to_crs("EPSG:25832")
-                    city_boundary['geometry'] = city_boundary['geometry'].buffer(10).buffer(-10) # Buffer in meters
-                    # Project back to WGS84 for Folium
-                    city_boundary = city_boundary.to_crs("EPSG:4326")
-                    
-                    folium.GeoJson(
-                        city_boundary,
-                        name="Cologne City Outline",
-                        style_function=lambda x: {
-                            'fillColor': '#3388ff',   # Blueish fill
-                            'fillOpacity': 0.1,       # Subtle fill
-                            'color': '#222222',       # Dark grey/Black outline
-                            'weight': 2,              # Thinner line (was 4)
-                            'opacity': 0.8            # Outline opacity
-                        }
-                    ).add_to(m)
-                else:
-                    st.error(f"Boroughs file not found at {boroughs_path}")
-
-
-                # Loop through tiles to display
-                # We create a FeatureGroup for the tiles
-                tile_layer_group = folium.FeatureGroup(name=f"{layer_type} (Tiles)")
-                
-                for tile_name in tiles_to_display:
-                    t_ndvi = PROCESSED_DIR / f"{tile_name}_ndvi.tif"
-                    t_mask = PROCESSED_DIR / f"{tile_name}_mask.tif"
-                    t_raw = DATA_DIR / "raw" / f"{tile_name}.jp2"
-                    
-                    # Get bounds for this specific tile
-                    t_bounds, t_crs = get_tile_bounds(tile_name)
-                    if not t_bounds or not t_crs:
-                        continue
-                        
-                    # Reproject bounds
-                    try:
-                        # Aggressive sanitization inline
-                        safe_t_crs = t_crs
-                        try:
-                            if not t_crs.is_epsg_code:
-                                # Force EPSG:25832 for non-standard CRS in this dataset
-                                safe_t_crs = rasterio.crs.CRS.from_epsg(25832)
-                        except:
-                            pass
-                             
-                        t_wgs84_bounds = transform_bounds(safe_t_crs, 'EPSG:4326', *t_bounds)
-                    except Exception:
-                         try:
-                            src_crs = rasterio.crs.CRS.from_epsg(25832)
-                            t_wgs84_bounds = transform_bounds(src_crs, 'EPSG:4326', *t_bounds)
-                         except:
-                            continue
-                            
-                    if layer_type == "NDVI":
-                        # Check for pre-calculated
-                        if t_ndvi.exists():
-                             with rasterio.open(t_ndvi) as src:
-                                data = src.read(1)
-                                # Handle Int16 scaling
-                                if data.dtype == 'int16':
-                                    data = data.astype('float32') * 0.0001
-                                
-                                # Colormap
-                                norm = mcolors.Normalize(vmin=-1, vmax=1)
-                                cmap = plt.get_cmap('RdYlGn')
-                                rgba = cmap(norm(data))
-                                
-                                folium.raster_layers.ImageOverlay(
-                                    image=rgba,
-                                    bounds=[[t_wgs84_bounds[1], t_wgs84_bounds[0]], [t_wgs84_bounds[3], t_wgs84_bounds[2]]],
-                                    opacity=0.7,
-                                    name=f"NDVI - {tile_name}"
-                                ).add_to(tile_layer_group)
-                        elif t_raw.exists():
-                             # On-demand
-                             with rasterio.open(t_raw) as src:
-                                # Downsample for performance
-                                MAX_DIM = 800 
-                                scale = MAX_DIM / max(src.width, src.height)
-                                if scale < 1:
-                                    out_shape = (src.count, int(src.height * scale), int(src.width * scale))
-                                    data = src.read(out_shape=out_shape, resampling=Resampling.bilinear)
-                                else:
-                                    data = src.read()
-                                    
-                                red = data[0].astype('float32')
-                                nir = data[3].astype('float32')
-                                ndvi = (nir - red) / (nir + red + 1e-8)
-                                
-                                norm = mcolors.Normalize(vmin=-1, vmax=1)
-                                cmap = plt.get_cmap('RdYlGn')
-                                rgba = cmap(norm(ndvi))
-                                
-                                folium.raster_layers.ImageOverlay(
-                                    image=rgba,
-                                    bounds=[[t_wgs84_bounds[1], t_wgs84_bounds[0]], [t_wgs84_bounds[3], t_wgs84_bounds[2]]],
-                                    opacity=0.7,
-                                    name=f"NDVI - {tile_name}"
-                                ).add_to(tile_layer_group)
-
-                    elif layer_type == "Segmentation Mask (Green Highlight)" and t_mask.exists():
-                        with rasterio.open(t_mask) as src:
-                             # Downsample
-                            MAX_DIM = 800
-                            scale = MAX_DIM / max(src.width, src.height)
-                            if scale < 1:
-                                out_shape = (src.count, int(src.height * scale), int(src.width * scale))
-                                data = src.read(out_shape=out_shape, resampling=Resampling.nearest)
-                            else:
-                                data = src.read()
-                                
-                            mask_data = data[0]
-                            # Create RGBA
-                            rgba = np.zeros((mask_data.shape[0], mask_data.shape[1], 4), dtype=np.uint8)
-                            
-                            # Highlight Green Classes (8, 9, 11, 12, 13, 14)
-                            # 8: herbaceous, 9: agri, 11: vineyard, 12: deciduous, 13: coniferous, 14: brushwood
-                            green_classes = [8, 9, 11, 12, 13, 14]
-                            
-                            # Make green classes bright green and opaque
-                            for c in green_classes:
-                                rgba[mask_data == c] = [0, 255, 0, 200] # Bright Green, High Opacity
-                                
-                            # Make everything else very faint or transparent
-                            # rgba[~np.isin(mask_data, green_classes)] = [0, 0, 0, 0] # Transparent
-                            
-                            folium.raster_layers.ImageOverlay(
-                                image=rgba,
-                                bounds=[[t_wgs84_bounds[1], t_wgs84_bounds[0]], [t_wgs84_bounds[3], t_wgs84_bounds[2]]],
-                                opacity=0.8,
-                                name=f"Mask (Green) - {tile_name}"
-                            ).add_to(tile_layer_group)
-
-                    elif layer_type == "Land Cover Classes" and t_mask.exists():
-                        with rasterio.open(t_mask) as src:
-                             # Downsample
-                            MAX_DIM = 800
-                            scale = MAX_DIM / max(src.width, src.height)
-                            if scale < 1:
-                                out_shape = (src.count, int(src.height * scale), int(src.width * scale))
-                                data = src.read(out_shape=out_shape, resampling=Resampling.nearest)
-                            else:
-                                data = src.read()
-                                
-                            mask_data = data[0]
-                            # Create RGBA
-                            rgba = np.zeros((mask_data.shape[0], mask_data.shape[1], 4), dtype=np.uint8)
-                            
-                            # Apply FLAIR Colors
-                            for cls_id, color in FLAIR_COLORS.items():
-                                rgba[mask_data == cls_id] = color
-                            
-                            folium.raster_layers.ImageOverlay(
-                                image=rgba,
-                                bounds=[[t_wgs84_bounds[1], t_wgs84_bounds[0]], [t_wgs84_bounds[3], t_wgs84_bounds[2]]],
-                                opacity=0.9,
-                                name=f"Land Cover - {tile_name}"
-                            ).add_to(tile_layer_group)
-
-                    elif layer_type == "Raw Satellite (RGB)" and t_raw.exists():
-                        with rasterio.open(t_raw) as src:
-                            MAX_DIM = 800
-                            scale = MAX_DIM / max(src.width, src.height)
-                            if scale < 1:
-                                    out_shape = (src.count, int(src.height * scale), int(src.width * scale))
-                                    data = src.read(out_shape=out_shape, resampling=Resampling.bilinear)
-                            else:
-                                    data = src.read()
-                            
-                            if data.shape[0] >= 3:
-                                r = data[0]; g = data[1]; b = data[2]
-                                rgb = np.dstack((r, g, b))
-                                if src.dtypes[0] == 'uint8':
-                                    rgb_norm = rgb / 255.0
-                                else:
-                                    p2, p98 = np.percentile(rgb, (2, 98))
-                                    rgb_norm = np.clip((rgb - p2) / (p98 - p2), 0, 1)
-                                    
-                                folium.raster_layers.ImageOverlay(
-                                    image=rgb_norm,
-                                    bounds=[[t_wgs84_bounds[1], t_wgs84_bounds[0]], [t_wgs84_bounds[3], t_wgs84_bounds[2]]],
-                                    opacity=1.0,
-                                    name=f"RGB - {tile_name}"
-                                ).add_to(tile_layer_group)
-                
-                tile_layer_group.add_to(m)
-
-                folium.LayerControl().add_to(m)
-                
-                # Render Map and Capture Clicks
-                map_output = st_folium(m, width=800, height=600, returned_objects=["last_object_clicked"])
-                
-                # Handle Clicks
-                if map_output['last_object_clicked']:
-                    clicked_props = map_output['last_object_clicked'].get('properties')
-                    if clicked_props and 'name' in clicked_props:
-                        clicked_veedel = clicked_props['name']
-                        if clicked_veedel != st.session_state['selected_veedel']:
-                            st.session_state['selected_veedel'] = clicked_veedel
-                            # Calculate new center/zoom
-                            # We need to access the GDF again. 
-                            # Since we are inside the loop where GDF is loaded, we can use it.
-                            # But 'merged_gdf' is local to the if block above.
-                            # We should probably move GDF loading outside or access it here.
-                            # For now, let's just trigger a rerun, and the 'update_view_for_veedel' logic (if we implement it fully) 
-                            # or the 'if selected_veedel != "All"' block will handle it.
-                            
-                            # To implement auto-zoom on click, we need to update map_center/zoom in session state
-                            # We can reload the GDF briefly to get the centroid
-                            if boundaries_path.exists():
-                                import geopandas as gpd
-                                gdf_temp = gpd.read_parquet(boundaries_path)
-                                if gdf_temp.crs != "EPSG:4326":
-                                    gdf_temp = gdf_temp.to_crs("EPSG:4326")
-                                sel_geom = gdf_temp[gdf_temp['name'] == clicked_veedel]
-                                if not sel_geom.empty:
-                                    centroid = sel_geom.geometry.centroid.iloc[0]
-                                    st.session_state['map_center'] = [centroid.y, centroid.x]
-                                    st.session_state['map_zoom'] = 14 # Zoom in closer
-                            
-                            st.rerun()
+    # 1. Boroughs (Background)
+    if gdf_boroughs is not None and not gdf_boroughs.empty:
+        folium.GeoJson(
+            gdf_boroughs,
+            name="Results: Districts (Stadtbezirke)",
+            style_function=lambda x: {'fillColor': 'none', 'color': '#333333', 'weight': 2, 'dashArray': '5, 5', 'fillOpacity': 0.0},
+            tooltip=folium.GeoJsonTooltip(fields=['name'], aliases=['Bezirk:'])
+        ).add_to(m)
+    
+    # 2. Quarters (Interactive)
+    if gdf_quarters is not None and not gdf_quarters.empty:
+        # Style function handling both highlight and chloropleth
+        def style_fn(feature):
+            name = feature['properties']['name']
             
-
+            # Selection Highlight
+            if selected_veedel != "All" and name == selected_veedel:
+                 return {'fillColor': '#ffff00', 'color': 'black', 'weight': 3, 'fillOpacity': 0.2}
             
-        else:
-            st.error("Could not determine bounds for map.")
+            # Default Chloropleth (if no selection or not selected)
+            green_area = feature['properties'].get('green_area_m2', 0)
+            has_green = green_area > 0
+            
+            # If "All" is selected, we show chloropleth
+            # If specific Veedel selected, we fade others
+            opacity = 0.4 if selected_veedel == "All" else 0.1
+            
+            return {
+                'fillColor': 'green' if has_green else 'gray',
+                'color': '#666666',
+                'weight': 1,
+                'fillOpacity': 0.1 if selected_veedel != "All" else 0.4
+            }
+        
+        folium.GeoJson(
+            gdf_quarters,
+            name="Quarters (Veedel)",
+            style_function=style_fn,
+            tooltip=folium.GeoJsonTooltip(
+                fields=['name', 'green_area_m2'], 
+                aliases=['Veedel:', 'Green Area (m²):'], 
+                localize=True
+            )
+        ).add_to(m)
 
-st.sidebar.info("Local Preview Mode")
+    # 3. City Outline (Fixed Dissolve)
+    if gdf_boroughs is not None and not gdf_boroughs.empty:
+         # Use a constant column to dissolve all into one polygon
+         gdf_boroughs['dissolve_const'] = 1
+         city_outline = gdf_boroughs.dissolve(by='dissolve_const')
+         folium.GeoJson(
+            city_outline,
+            name="Cologne City Outline",
+            style_function=lambda x: {'fillColor': 'none', 'color': 'black', 'weight': 2, 'dashArray': '10, 5', 'fillOpacity': 0.0}
+         ).add_to(m)
+
+    # 4. Tile Overlay
+    tiles_to_display = []
+    
+    # Logic: 
+    # - If tile selected -> Show that tile (Priority)
+    # - If Veedel selected -> Show first 5 tiles of Veedel
+    # - If "All" selected -> Show NOTHING by default (to avoid crash), unless user picks a tile
+    
+    if selected_tile:
+        tiles_to_display = [selected_tile]
+    elif selected_veedel != "All" and current_veedel_tiles:
+         if len(current_veedel_tiles) > 5:
+             st.toast(f"Displaying 5/{len(current_veedel_tiles)} tiles for performance. Select a specific tile to view others.", icon="ℹ️")
+             tiles_to_display = current_veedel_tiles[:5]
+         else:
+             tiles_to_display = current_veedel_tiles
+    
+    # Processing Loop (unchanged logic, just re-indented)
+    def read_local_raster(tile_name, layer):
+        f_mask = PROCESSED_DIR / f"{tile_name}_mask.tif"
+        f_ndvi = PROCESSED_DIR / f"{tile_name}_ndvi.tif"
+        f_raw = DATA_DIR / "raw" / f"{tile_name}.jp2"
+        target = None
+        if layer == "NDVI": target = f_ndvi if f_ndvi.exists() else f_raw
+        elif "Mask" in layer or "Classes" in layer: target = f_mask
+        elif "Raw" in layer: target = f_raw
+        if not target or not target.exists(): return None, None
+        try: return rasterio.open(target), target
+        except: return None, None
+
+    for tile_name in tiles_to_display:
+        src, path = read_local_raster(tile_name, layer_type)
+        if src:
+            with src:
+                 bounds = src.bounds
+                 from rasterio.crs import CRS
+                 src_crs = src.crs
+                 if not src_crs: src_crs = CRS.from_epsg(25832)
+                 try: wgs_bounds = transform_bounds(src_crs, "EPSG:4326", *bounds)
+                 except: continue
+
+                 data = src.read()
+                 image_data = None
+                 opacity = 0.7
+                 
+                 if layer_type == "Segmentation Mask (Green Highlight)":
+                        mask_data = data[0]
+                        rgba = np.zeros((mask_data.shape[0], mask_data.shape[1], 4), dtype=np.uint8)
+                        for c in [4, 5, 6, 7, 9, 10, 11, 12]: rgba[mask_data == c] = [0, 255, 0, 200]
+                        image_data = rgba
+                        opacity = 0.8
+                 elif layer_type == "Land Cover Classes":
+                        mask_data = data[0]
+                        rgba = np.zeros((mask_data.shape[0], mask_data.shape[1], 4), dtype=np.uint8)
+                        for cls_id, color in FLAIR_COLORS.items(): rgba[mask_data == cls_id] = color
+                        image_data = rgba
+                        opacity = 0.8
+                 elif layer_type == "NDVI":
+                         if src.count == 1:
+                            ndvi = data[0].astype('float32') * 0.0001
+                            image_data = plt.get_cmap('RdYlGn')(mcolors.Normalize(vmin=-1, vmax=1)(ndvi))
+                 elif layer_type == "Raw Satellite (RGB)":
+                        if src.count >= 3:
+                            rgb = np.dstack((data[0], data[1], data[2]))
+                            p2, p98 = np.percentile(rgb, (2, 98))
+                            image_data = np.clip((rgb - p2) / (p98 - p2), 0, 1)
+                            opacity = 1.0
+
+                 if image_data is not None:
+                      folium.raster_layers.ImageOverlay(
+                            image=image_data,
+                            bounds=[[wgs_bounds[1], wgs_bounds[0]], [wgs_bounds[3], wgs_bounds[2]]],
+                            opacity=opacity,
+                            name=f"{layer_type} - {tile_name}",
+                            control=False
+                      ).add_to(m)
+
+    folium.LayerControl().add_to(m)
+    
+    # Optimized Return: prevent crash by limiting data transfer
+    map_output = st_folium(m, width=None, height=700, key="main_map", use_container_width=True, returned_objects=["last_object_clicked"])
+    
+    if map_output['last_object_clicked']:
+        props = map_output['last_object_clicked'].get('properties')
+        if props and 'name' in props:
+            clicked_name = props['name']
+            if clicked_name in veedel_list and clicked_name != st.session_state['selected_veedel']:
+                st.session_state['selected_veedel_widget'] = clicked_name
+                st.session_state['selected_veedel'] = clicked_name
+                st.rerun()
