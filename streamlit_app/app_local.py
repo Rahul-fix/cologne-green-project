@@ -20,32 +20,27 @@ st.title("🌿 GreenCologne (Local Preview)")
 
 # 2. Paths & Constants
 DATA_DIR = Path("data")
-STATS_FILE = DATA_DIR / "stats" / "stats.parquet"
+# 2. Paths & Constants
+DATA_DIR = Path("data")
+STATS_FILE = DATA_DIR / "stats" / "extended_stats.parquet"
 QUARTERS_FILE = DATA_DIR / "boundaries" / "Stadtviertel.parquet"
 BOROUGHS_FILE = DATA_DIR / "boundaries" / "Stadtbezirke.parquet"
 PROCESSED_DIR = DATA_DIR / "processed"
 TILES_METADATA_FILE = DATA_DIR / "metadata" / "cologne_tiles.csv"
 
-# FLAIR-HUB Color Palette
+# FLAIR-HUB Color Palette & Labels
 FLAIR_COLORS = {
-    1: [219, 14, 154, 255],     # Building
-    2: [255, 0, 0, 255],        # Impervious
-    3: [143, 85, 41, 255],      # Barren
-    4: [0, 255, 0, 255],        # Grass
-    5: [32, 105, 10, 255],      # Brush
-    6: [90, 31, 10, 255],       # Agriculture
-    7: [48, 25, 23, 255],       # Tree
-    8: [13, 227, 237, 255],     # Water
-    9: [2, 161, 9, 255],        # Herbaceous
-    10: [136, 68, 145, 255],    # Shrub
-    11: [55, 23, 40, 255],      # Moss
-    12: [173, 201, 198, 255],   # Lichen
-    13: [0, 0, 0, 0],           # Unknown
+    1: [219, 14, 154, 255],     2: [255, 0, 0, 255],        3: [143, 85, 41, 255],
+    4: [0, 255, 0, 255],        5: [32, 105, 10, 255],      6: [90, 31, 10, 255],
+    7: [48, 25, 23, 255],       8: [13, 227, 237, 255],     9: [2, 161, 9, 255],
+    10: [136, 68, 145, 255],    11: [55, 23, 40, 255],      12: [173, 201, 198, 255],
+    13: [0, 0, 0, 0],
 }
-
-if not STATS_FILE.exists():
-    st.error(f"Stats file not found at {STATS_FILE}. Run scripts/05_generate_stats.py first.")
-    st.stop()
+CLASS_LABELS = {
+    1: 'Building', 2: 'Impervious', 3: 'Barren', 4: 'Grass', 5: 'Brush',
+    6: 'Agriculture', 7: 'Tree', 8: 'Water', 9: 'Herbaceous', 10: 'Shrub',
+    11: 'Moss', 12: 'Lichen', 13: 'Unknown'
+}
 
 # 3. Data Loading Functions
 @st.cache_data
@@ -99,8 +94,6 @@ def get_tile_to_veedel_mapping():
 gdf_quarters = load_quarters_with_stats()
 gdf_boroughs = load_boroughs()
 tile_mapping = get_tile_to_veedel_mapping()
-# df_stats is now implied in gdf_quarters, but if we need a pure df for charts:
-df_stats = pd.DataFrame(gdf_quarters.drop(columns='geometry')) if gdf_quarters is not None else pd.DataFrame()
 
 # 4. State Management
 if 'selected_veedel' not in st.session_state:
@@ -110,32 +103,31 @@ if 'map_center' not in st.session_state:
 if 'map_zoom' not in st.session_state:
     st.session_state['map_zoom'] = 10 # Whole city view
 
-# 5. Layout# --- Layout ---
+# --- Layout ---
 col_map, col_details = st.columns([0.65, 0.35], gap="medium")
 
 with col_details:
     st.markdown("### GreenCologne Analysis")
-    
-    # Tabs for Options and Statistics
     tab_opts, tab_stats = st.tabs(["🛠️ Options", "📊 Statistics"])
     
     veedel_list = ["All"] + sorted(gdf_quarters['name'].unique().tolist()) if gdf_quarters is not None and not gdf_quarters.empty else ["All"]
     
-    # --- Options Tab ---
     with tab_opts:
-        # Veedel Selection
-        def on_veedel_change():
-            sel = st.session_state['selected_veedel_widget']
-            st.session_state['selected_veedel'] = sel
-            if sel == "All":
+        def update_zoom_for_veedel(veedel_name):
+             if veedel_name == "All":
                 st.session_state['map_center'] = [50.9375, 6.9603]
                 st.session_state['map_zoom'] = 10
-            elif gdf_quarters is not None and not gdf_quarters.empty:
-                 match = gdf_quarters[gdf_quarters['name'] == sel]
+             elif gdf_quarters is not None:
+                 match = gdf_quarters[gdf_quarters['name'] == veedel_name]
                  if not match.empty:
                      centroid = match.geometry.centroid.iloc[0]
                      st.session_state['map_center'] = [centroid.y, centroid.x]
-                     st.session_state['map_zoom'] = 13 # Zoom in closer
+                     st.session_state['map_zoom'] = 13
+
+        def on_veedel_change():
+            sel = st.session_state['selected_veedel_widget']
+            st.session_state['selected_veedel'] = sel
+            update_zoom_for_veedel(sel)
 
         selected_veedel = st.selectbox(
             "Select Quarter (Veedel/Stadtviertel):", 
@@ -149,161 +141,142 @@ with col_details:
         current_veedel_tiles = []
         if selected_veedel != "All":
             veedel_tiles = set(tile_mapping.get(selected_veedel, []))
-            # For local, check existence
             filtered_tiles = []
             for t in veedel_tiles:
                  if (DATA_DIR / "raw" / f"{t}.jp2").exists() or (PROCESSED_DIR / f"{t}_mask.tif").exists():
                      filtered_tiles.append(t)
             current_veedel_tiles = sorted(filtered_tiles)
         else:
-            # "All" mode: Show ALL available tiles (could be many)
-            # For local, scan directory? Or use mapping keys?
-            # Let's take all from mapping for now but limit downstream
             all_t = set()
-            for k, v in tile_mapping.items():
-                all_t.update(v)
+            for k, v in tile_mapping.items(): all_t.update(v)
             current_veedel_tiles = sorted(list(all_t))
 
         tile_options = ["- Select a Tile -"] + current_veedel_tiles
         selected_tile = st.selectbox("Select Tile:", tile_options)
         if selected_tile == "- Select a Tile -": selected_tile = None
 
-        # Layer Selection
-        layer_type = st.radio(
+        st.info("ℹ️ Select a specific Veedel or Tile to view satellite imagery.")
+        
+        # Layer Selection (Reverted to Radio)
+        layer_selection = st.radio(
             "Select Layer:",
-            ["Segmentation Mask (Green Highlight)", "Land Cover Classes", "NDVI", "Raw Satellite (RGB)"],
-            index=0
+            ["Raw Satellite (RGB)", "Segmentation Mask (Green Highlight)", "Land Cover Classes", "NDVI"],
+            index=1,
+            horizontal=True
         )
         
-        st.info("ℹ️ Select a specific Veedel or Tile to view satellite imagery.")
+        # Legend (Conditional based on layer)
+        if layer_selection == "Land Cover Classes":
+            st.markdown("#### Legend")
+            legend_html = "<div style='display: grid; grid-template-columns: 1fr 1fr; gap: 5px; font-size: 12px;'>"
+            for cls_id, label in CLASS_LABELS.items():
+                if cls_id == 13: continue
+                c = FLAIR_COLORS[cls_id]
+                color_css = f"rgba({c[0]},{c[1]},{c[2]},{c[3]/255})"
+                legend_html += f"<div style='display: flex; align-items: center;'><div style='width: 12px; height: 12px; background: {color_css}; margin-right: 5px; border: 1px solid #ccc;'></div>{label}</div>"
+            legend_html += "</div>"
+            st.markdown(legend_html, unsafe_allow_html=True)
 
-    # --- Stats Tab ---
     with tab_stats:
         if selected_veedel != "All" and gdf_quarters is not None and not gdf_quarters.empty:
             row = gdf_quarters[gdf_quarters['name'] == selected_veedel]
             if not row.empty:
-                st.markdown(f"#### {selected_veedel}")
+                st.markdown(f"#### {selected_veedel} Stats")
                 area_m2 = row['green_area_m2'].values[0] if 'green_area_m2' in row else 0
-                area_ha = area_m2 / 10000
                 total_area_m2 = row['Shape_Area'].values[0] if 'Shape_Area' in row else 1
-                pct = (area_m2 / total_area_m2) * 100
                 
-                col_metric1, col_metric2 = st.columns(2)
-                col_metric1.metric("Green Area", f"{area_ha:.2f} ha")
-                col_metric2.metric("Green Coverage", f"{pct:.1f}%")
+                c1, c2 = st.columns(2)
+                c1.metric("Green Area", f"{(area_m2/10000):.2f} ha")
+                c2.metric("Green Coverage", f"{(area_m2/total_area_m2)*100:.1f}%")
                 
-                # Simple gauge chart using Plotly
-                fig_gauge = px.pie(
-                    names=['Green', 'Other'], 
-                    values=[area_m2, total_area_m2 - area_m2],
-                    color=['Green', 'Other'],
-                    color_discrete_map={'Green': 'green', 'Other': 'lightgray'},
-                    hole=0.6,
-                    title="Green Coverage"
-                )
-                fig_gauge.update_layout(height=300, margin=dict(t=30, b=0, l=0, r=0))
-                st.plotly_chart(fig_gauge, use_container_width=True)
-                
-        elif gdf_quarters is not None and not gdf_quarters.empty:
-             st.markdown("#### City Overview")
-             total_ha = gdf_quarters['green_area_m2'].sum() / 10000 if 'green_area_m2' in gdf_quarters.columns else 0
-             st.metric("Total Green Area", f"{total_ha:.2f} ha")
-             
-             # Top 10 Chart
-             top_10 = gdf_quarters.sort_values('green_area_m2', ascending=False).head(10)
-             fig = px.bar(
-                top_10, 
-                x='name', 
-                y='green_area_m2',
-                title="Top 10 Greenest Quarters",
-                labels={'green_area_m2': 'Green Area (m²)', 'name': ''},
-                color='green_area_m2',
-                color_continuous_scale='Greens'
-            )
-             fig.update_layout(height=400, margin=dict(l=0, r=0))
-             st.plotly_chart(fig, use_container_width=True)
+                # Class Breakdown (New)
+                class_cols = [c for c in row.index if str(c).startswith('area_')]
+                if class_cols:
+                    class_data = row[class_cols].T.reset_index()
+                    class_data.columns = ['class_col', 'area_m2']
+                    class_data['class_id'] = class_data['class_col'].str.replace('area_', '').astype(int)
+                    class_data['class_name'] = class_data['class_id'].map(CLASS_LABELS)
+                    class_data['color'] = class_data['class_id'].map(lambda x: f"rgba({FLAIR_COLORS[x][0]},{FLAIR_COLORS[x][1]},{FLAIR_COLORS[x][2]}, 1)")
+                    
+                    fig_bar = px.bar(
+                        class_data, x='class_name', y='area_m2', 
+                        title="Land Cover Distribution", 
+                        labels={'area_m2': 'Area (m²)', 'class_name': 'Class'},
+                        color='class_name', color_discrete_map={row['class_name']: row['color'] for _, row in class_data.iterrows()}
+                    )
+                    st.plotly_chart(fig_bar, use_container_width=True)
 
 # --- Map Logic ---
 with col_map:
+    # 1. Simplified Basemap (CartoDB only)
     m = folium.Map(location=st.session_state['map_center'], zoom_start=st.session_state['map_zoom'], tiles="CartoDB positron")
     
-    folium.TileLayer(tiles="OpenStreetMap", name="OpenStreetMap", control=True, show=False).add_to(m)
-    folium.TileLayer(tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}", attr="Google", name="Satellite (Google)", overlay=False, control=True, show=False).add_to(m)
-
-    # 1. Boroughs (Background)
+    # 2. Results: Districts
     if gdf_boroughs is not None and not gdf_boroughs.empty:
         folium.GeoJson(
             gdf_boroughs,
-            name="Results: Districts (Stadtbezirke)",
+            name="Districts",
             style_function=lambda x: {'fillColor': 'none', 'color': '#333333', 'weight': 2, 'dashArray': '5, 5', 'fillOpacity': 0.0},
             tooltip=folium.GeoJsonTooltip(fields=['name'], aliases=['Bezirk:'])
         ).add_to(m)
     
-    # 2. Quarters (Interactive)
+    # 3. Quarters (Veedel)
     if gdf_quarters is not None and not gdf_quarters.empty:
-        # Style function handling both highlight and chloropleth
+        # Calculate bounds for NDVI coloring
+        min_ndvi = gdf_quarters['ndvi_mean'].min() if 'ndvi_mean' in gdf_quarters else 0
+        max_ndvi = gdf_quarters['ndvi_mean'].max() if 'ndvi_mean' in gdf_quarters else 0.6
+        if pd.isna(min_ndvi): min_ndvi = 0
+        if pd.isna(max_ndvi): max_ndvi = 0.6
+        
+        def get_color(feature):
+            if selected_veedel != "All" and feature['properties']['name'] == selected_veedel:
+                return '#ffff00' # Yellow highlight for selection
+            
+            val = feature['properties'].get('ndvi_mean')
+            if val is None or pd.isna(val): return 'gray'
+            
+            # Normalize 0 to 1 based on min/max
+            norm = (val - min_ndvi) / (max_ndvi - min_ndvi + 1e-9)
+            norm = max(0, min(1, norm))
+            
+            # Use RdYlGn colormap (Red -> Yellow -> Green)
+            # 0.0 -> Red, 1.0 -> Green
+            rgba = plt.get_cmap('RdYlGn')(norm)
+            return mcolors.to_hex(rgba)
+
         def style_fn(feature):
             name = feature['properties']['name']
-            
-            # Selection Highlight
-            if selected_veedel != "All" and name == selected_veedel:
-                 return {'fillColor': '#ffff00', 'color': 'black', 'weight': 3, 'fillOpacity': 0.2}
-            
-            # Default Chloropleth (if no selection or not selected)
-            green_area = feature['properties'].get('green_area_m2', 0)
-            has_green = green_area > 0
-            
-            # If "All" is selected, we show chloropleth
-            # If specific Veedel selected, we fade others
-            opacity = 0.4 if selected_veedel == "All" else 0.1
+            is_selected = (selected_veedel != "All" and name == selected_veedel)
             
             return {
-                'fillColor': 'green' if has_green else 'gray',
-                'color': '#666666',
-                'weight': 1,
-                'fillOpacity': 0.1 if selected_veedel != "All" else 0.4
+                'fillColor': get_color(feature),
+                'color': 'black' if is_selected else '#666666',
+                'weight': 3 if is_selected else 1,
+                'fillOpacity': 0.0 if is_selected else 0.6  # Transparent if selected, else 0.6
             }
+        
+        # Prepare data for tooltip (PCT calculation)
+        if 'green_area_m2' in gdf_quarters.columns and 'Shape_Area' in gdf_quarters.columns:
+             gdf_quarters['green_pct'] = (gdf_quarters['green_area_m2'] / gdf_quarters['Shape_Area']) * 100
         
         folium.GeoJson(
             gdf_quarters,
-            name="Quarters (Veedel)",
+            name="Veedel (NDVI)",
             style_function=style_fn,
             tooltip=folium.GeoJsonTooltip(
-                fields=['name', 'green_area_m2'], 
-                aliases=['Veedel:', 'Green Area (m²):'], 
-                localize=True
+                fields=['name', 'green_area_m2', 'green_pct', 'ndvi_mean'], 
+                aliases=['Veedel:', 'Green Area (m²):', 'Green Coverage (%):', 'Mean NDVI:'], 
+                localize=True,
+                fmt='.2f'
             )
         ).add_to(m)
 
-    # 3. City Outline (Fixed Dissolve)
-    if gdf_boroughs is not None and not gdf_boroughs.empty:
-         # Use a constant column to dissolve all into one polygon
-         gdf_boroughs['dissolve_const'] = 1
-         city_outline = gdf_boroughs.dissolve(by='dissolve_const')
-         folium.GeoJson(
-            city_outline,
-            name="Cologne City Outline",
-            style_function=lambda x: {'fillColor': 'none', 'color': 'black', 'weight': 2, 'dashArray': '10, 5', 'fillOpacity': 0.0}
-         ).add_to(m)
-
-    # 4. Tile Overlay
+    # 4. Tiles Overlay (Single Selection)
     tiles_to_display = []
-    
-    # Logic: 
-    # - If tile selected -> Show that tile (Priority)
-    # - If Veedel selected -> Show first 5 tiles of Veedel
-    # - If "All" selected -> Show NOTHING by default (to avoid crash), unless user picks a tile
-    
-    if selected_tile:
-        tiles_to_display = [selected_tile]
+    if selected_tile: tiles_to_display = [selected_tile]
     elif selected_veedel != "All" and current_veedel_tiles:
-         if len(current_veedel_tiles) > 5:
-             st.toast(f"Displaying 5/{len(current_veedel_tiles)} tiles for performance. Select a specific tile to view others.", icon="ℹ️")
-             tiles_to_display = current_veedel_tiles[:5]
-         else:
-             tiles_to_display = current_veedel_tiles
+         tiles_to_display = current_veedel_tiles[:5] # Limit 5
     
-    # Processing Loop (unchanged logic, just re-indented)
     def read_local_raster(tile_name, layer):
         f_mask = PROCESSED_DIR / f"{tile_name}_mask.tif"
         f_ndvi = PROCESSED_DIR / f"{tile_name}_ndvi.tif"
@@ -316,56 +289,67 @@ with col_map:
         try: return rasterio.open(target), target
         except: return None, None
 
+    # Only add the SELECTED layer
+    layer_type = layer_selection
+    
+    # Create a FeatureGroup for the single selected layer
+    # We still use FeatureGroup so we can control it via LayerControl if we wanted, 
+    # but here we rely on st.radio reload.
+    fg = folium.FeatureGroup(name=layer_type, show=True)
+    
     for tile_name in tiles_to_display:
         src, path = read_local_raster(tile_name, layer_type)
         if src:
             with src:
-                 bounds = src.bounds
-                 from rasterio.crs import CRS
-                 src_crs = src.crs
-                 if not src_crs: src_crs = CRS.from_epsg(25832)
-                 try: wgs_bounds = transform_bounds(src_crs, "EPSG:4326", *bounds)
-                 except: continue
-
-                 data = src.read()
-                 image_data = None
-                 opacity = 0.7
-                 
-                 if layer_type == "Segmentation Mask (Green Highlight)":
+                    bounds = src.bounds
+                    from rasterio.crs import CRS
+                    src_crs = src.crs
+                    if not src_crs: src_crs = CRS.from_epsg(25832)
+                    try: wgs_bounds = transform_bounds(src_crs, "EPSG:4326", *bounds)
+                    except: continue
+                    data = src.read()
+                    image_data = None
+                    opacity = 0.7
+                    
+                    if layer_type == "Segmentation Mask (Green Highlight)":
                         mask_data = data[0]
                         rgba = np.zeros((mask_data.shape[0], mask_data.shape[1], 4), dtype=np.uint8)
                         for c in [4, 5, 6, 7, 9, 10, 11, 12]: rgba[mask_data == c] = [0, 255, 0, 200]
                         image_data = rgba
                         opacity = 0.8
-                 elif layer_type == "Land Cover Classes":
+                    elif layer_type == "Land Cover Classes":
                         mask_data = data[0]
                         rgba = np.zeros((mask_data.shape[0], mask_data.shape[1], 4), dtype=np.uint8)
                         for cls_id, color in FLAIR_COLORS.items(): rgba[mask_data == cls_id] = color
                         image_data = rgba
                         opacity = 0.8
-                 elif layer_type == "NDVI":
-                         if src.count == 1:
-                            ndvi = data[0].astype('float32') * 0.0001
-                            image_data = plt.get_cmap('RdYlGn')(mcolors.Normalize(vmin=-1, vmax=1)(ndvi))
-                 elif layer_type == "Raw Satellite (RGB)":
+                    elif layer_type == "NDVI":
+                            if src.count == 1:
+                                ndvi = data[0].astype('float32') * 0.0001
+                                image_data = plt.get_cmap('RdYlGn')(mcolors.Normalize(vmin=-1, vmax=1)(ndvi))
+                    elif layer_type == "Raw Satellite (RGB)":
                         if src.count >= 3:
                             rgb = np.dstack((data[0], data[1], data[2]))
                             p2, p98 = np.percentile(rgb, (2, 98))
                             image_data = np.clip((rgb - p2) / (p98 - p2), 0, 1)
                             opacity = 1.0
 
-                 if image_data is not None:
-                      folium.raster_layers.ImageOverlay(
+                    if image_data is not None:
+                        folium.raster_layers.ImageOverlay(
                             image=image_data,
                             bounds=[[wgs_bounds[1], wgs_bounds[0]], [wgs_bounds[3], wgs_bounds[2]]],
                             opacity=opacity,
                             name=f"{layer_type} - {tile_name}",
                             control=False
-                      ).add_to(m)
-
-    folium.LayerControl().add_to(m)
+                        ).add_to(fg)
     
-    # Optimized Return: prevent crash by limiting data transfer
+    fg.add_to(m)
+
+    # LayerControl is optional if we only have 1 dynamic layer + standard overlays,
+    # but good to keep for switching off Veedel/Districts if desired.
+    folium.LayerControl().add_to(m)
+
+    # 5. Map Click Logic (Zoom Fix)
     map_output = st_folium(m, width=None, height=700, key="main_map", use_container_width=True, returned_objects=["last_object_clicked"])
     
     if map_output['last_object_clicked']:
@@ -375,4 +359,15 @@ with col_map:
             if clicked_name in veedel_list and clicked_name != st.session_state['selected_veedel']:
                 st.session_state['selected_veedel_widget'] = clicked_name
                 st.session_state['selected_veedel'] = clicked_name
+                # MANUAL UPDATE with centroid fix
+                if gdf_quarters is not None:
+                     match = gdf_quarters[gdf_quarters['name'] == clicked_name]
+                     if not match.empty:
+                         # Reproject to metric (EPSG:25832) for accurate centroid, then back to WGS84
+                         try:
+                             centroid = match.to_crs("EPSG:25832").geometry.centroid.to_crs("EPSG:4326").iloc[0]
+                             st.session_state['map_center'] = [centroid.y, centroid.x]
+                             st.session_state['map_zoom'] = 13
+                         except Exception as e:
+                             st.warning(f"Could not calc centroid: {e}")
                 st.rerun()
