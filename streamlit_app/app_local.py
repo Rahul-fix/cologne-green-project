@@ -29,17 +29,36 @@ PROCESSED_DIR = DATA_DIR / "processed"
 TILES_METADATA_FILE = DATA_DIR / "metadata" / "cologne_tiles.csv"
 
 # FLAIR-HUB Color Palette & Labels
+# FLAIR-HUB Color Palette & Labels (Matched to flair-hub-qgis-style-cosia-num.qml)
 FLAIR_COLORS = {
-    1: [219, 14, 154, 255],     2: [255, 0, 0, 255],        3: [143, 85, 41, 255],
-    4: [0, 255, 0, 255],        5: [32, 105, 10, 255],      6: [90, 31, 10, 255],
-    7: [48, 25, 23, 255],       8: [13, 227, 237, 255],     9: [2, 161, 9, 255],
-    10: [136, 68, 145, 255],    11: [55, 23, 40, 255],      12: [173, 201, 198, 255],
-    13: [0, 0, 0, 0],
+    0: [206, 112, 121, 255],   # Building
+    1: [185, 226, 212, 255],   # Greenhouse
+    2: [98, 208, 255, 255],    # Swimming pool
+    3: [166, 170, 183, 255],   # Impervious surface
+    4: [152, 119, 82, 255],    # Pervious surface
+    5: [187, 176, 150, 255],   # Bare soil
+    6: [51, 117, 161, 255],    # Water
+    7: [233, 239, 254, 255],   # Snow
+    8: [140, 215, 106, 255],   # Herbaceous vegetation
+    9: [222, 207, 85, 255],    # Agricultural land
+    10: [208, 163, 73, 255],   # Plowed land
+    11: [176, 130, 144, 255],  # Vineyard
+    12: [76, 145, 41, 255],    # Deciduous
+    13: [18, 100, 33, 255],    # Coniferous
+    14: [181, 195, 53, 255],   # Brushwood
+    15: [228, 142, 77, 255],   # Clear cut
+    16: [34, 34, 34, 255],     # Ligneous
+    17: [34, 34, 34, 255],     # Mixed
+    18: [34, 34, 34, 255],     # Other
 }
+
 CLASS_LABELS = {
-    1: 'Building', 2: 'Impervious', 3: 'Barren', 4: 'Grass', 5: 'Brush',
-    6: 'Agriculture', 7: 'Tree', 8: 'Water', 9: 'Herbaceous', 10: 'Shrub',
-    11: 'Moss', 12: 'Lichen', 13: 'Unknown'
+    0: 'Building', 1: 'Greenhouse', 2: 'Swimming pool',
+    3: 'Impervious surface', 4: 'Pervious surface', 5: 'Bare soil',
+    6: 'Water', 7: 'Snow', 8: 'Herbaceous vegetation',
+    9: 'Agricultural land', 10: 'Plowed land', 11: 'Vineyard',
+    12: 'Deciduous', 13: 'Coniferous', 14: 'Brushwood',
+    15: 'Clear cut', 16: 'Ligneous', 17: 'Mixed', 18: 'Other'
 }
 
 # 3. Data Loading Functions
@@ -89,6 +108,43 @@ def get_tile_to_veedel_mapping():
         
     joined = gpd.sjoin(tiles_gdf, quarters_gdf, how="inner", predicate="intersects")
     return joined.groupby('name')['Kachelname'].apply(list).to_dict()
+
+@st.cache_data(show_spinner=False)
+def get_image_layer(tile_id):
+    """
+    Load visualization layer.
+    Prioritizes 'web_optimized' (small) tiles for performance.
+    Fallback to 'raw' (large) if optimized not found.
+    """
+    optimized_path = Path(f"data/web_optimized/{tile_id}.tif")
+    raw_path = Path(f"data/raw/{tile_id}.jp2")
+    
+    # Try Optimized first
+    if optimized_path.exists():
+        try:
+            with rasterio.open(optimized_path) as src:
+                # Optimized tiles are usually 8-bit RGB
+                img = src.read([1, 2, 3])
+                bounds = src.bounds
+                image = np.moveaxis(img, 0, -1)
+                return image, [[bounds.bottom, bounds.left], [bounds.top, bounds.right]]
+        except Exception as e:
+            pass
+
+    # Fallback to Raw
+    if raw_path.exists():
+        try:
+            with rasterio.open(raw_path) as src:
+                img = src.read([1, 2, 3])
+                bounds = src.bounds
+                image = np.moveaxis(img, 0, -1)
+                if image.dtype == 'uint16':
+                     image = (image / 256).astype('uint8')
+                return image, [[bounds.bottom, bounds.left], [bounds.top, bounds.right]]
+        except Exception as e:
+             return None, None
+             
+    return None, None
 
 # Load Data
 gdf_quarters = load_quarters_with_stats()
@@ -298,23 +354,52 @@ with col_map:
     fg = folium.FeatureGroup(name=layer_type, show=True)
     
     for tile_name in tiles_to_display:
-        src, path = read_local_raster(tile_name, layer_type)
-        if src:
-            with src:
-                    bounds = src.bounds
+        image_data = None
+        opacity = 0.7
+        wgs_bounds = None
+        
+        # 1. Optimized RGB Layer
+        if layer_type == "Raw Satellite (RGB)":
+            img, bounds = get_image_layer(tile_name)
+            if img is not None:
+                image_data = img
+                opacity = 1.0
+                try:
                     from rasterio.crs import CRS
-                    src_crs = src.crs
-                    if not src_crs: src_crs = CRS.from_epsg(25832)
-                    try: wgs_bounds = transform_bounds(src_crs, "EPSG:4326", *bounds)
+                    wgs_bounds = transform_bounds(CRS.from_epsg(25832), "EPSG:4326", 
+                                                bounds[0][1], bounds[0][0], bounds[1][1], bounds[1][0])
+                except: continue
+
+        # 2. Optimized Mask or NDVI (NEW)
+        elif "Mask" in layer_type or "Classes" in layer_type or layer_type == "NDVI":
+            # Check for optimized file first
+            suffix = "_mask" if ("Mask" in layer_type or "Classes" in layer_type) else "_ndvi"
+            opt_path = DATA_DIR / "web_optimized" / f"{tile_name}{suffix}.tif"
+            
+            src = None
+            if opt_path.exists():
+                try: src = rasterio.open(opt_path)
+                except: pass
+            
+            # Fallback to Processed/Raw if Optimized missing
+            if not src:
+                 src, path = read_local_raster(tile_name, layer_type)
+            
+            if src:
+                with src:
+                    bounds = src.bounds
+                    crs = src.crs or rasterio.crs.CRS.from_epsg(25832)
+                    try: 
+                        wgs_bounds = transform_bounds(crs, "EPSG:4326", *bounds)
                     except: continue
+                    
                     data = src.read()
-                    image_data = None
-                    opacity = 0.7
                     
                     if layer_type == "Segmentation Mask (Green Highlight)":
                         mask_data = data[0]
                         rgba = np.zeros((mask_data.shape[0], mask_data.shape[1], 4), dtype=np.uint8)
-                        for c in [4, 5, 6, 7, 9, 10, 11, 12]: rgba[mask_data == c] = [0, 255, 0, 200]
+                        # Veg classes (QML): 8=Herbaceous, 9=Agri, 10=Plowed, 11=Vineyard, 12=Deciduous, 13=Coniferous, 14=Brushwood
+                        for c in [8, 9, 10, 11, 12, 13, 14]: rgba[mask_data == c] = [0, 255, 0, 200]
                         image_data = rgba
                         opacity = 0.8
                     elif layer_type == "Land Cover Classes":
@@ -324,24 +409,26 @@ with col_map:
                         image_data = rgba
                         opacity = 0.8
                     elif layer_type == "NDVI":
-                            if src.count == 1:
-                                ndvi = data[0].astype('float32') * 0.0001
-                                image_data = plt.get_cmap('RdYlGn')(mcolors.Normalize(vmin=-1, vmax=1)(ndvi))
-                    elif layer_type == "Raw Satellite (RGB)":
-                        if src.count >= 3:
-                            rgb = np.dstack((data[0], data[1], data[2]))
-                            p2, p98 = np.percentile(rgb, (2, 98))
-                            image_data = np.clip((rgb - p2) / (p98 - p2), 0, 1)
-                            opacity = 1.0
+                        if src.count == 1:
+                            ndvi = data[0]
+                            # Handle optimized float32 OR computed float32
+                            # If optimized, it's already NDVI.
+                            # If quantised? We kept it float32.
+                            image_data = plt.get_cmap('RdYlGn')(mcolors.Normalize(vmin=-0.2, vmax=1)(ndvi))
+                            # Note: plt returns (M, N, 4) float64 usually. Folium handles it?
+                            # Optimisation: Convert to uint8?
+                            # Folium/Base64 encoding handles floats but slower.
+                            # But works.
 
-                    if image_data is not None:
-                        folium.raster_layers.ImageOverlay(
-                            image=image_data,
-                            bounds=[[wgs_bounds[1], wgs_bounds[0]], [wgs_bounds[3], wgs_bounds[2]]],
-                            opacity=opacity,
-                            name=f"{layer_type} - {tile_name}",
-                            control=False
-                        ).add_to(fg)
+        # 3. Add to Map
+        if image_data is not None and wgs_bounds:
+             folium.raster_layers.ImageOverlay(
+                image=image_data,
+                bounds=[[wgs_bounds[1], wgs_bounds[0]], [wgs_bounds[3], wgs_bounds[2]]],
+                opacity=opacity,
+                name=f"{layer_type} - {tile_name}",
+                control=False
+            ).add_to(fg)
     
     fg.add_to(m)
 

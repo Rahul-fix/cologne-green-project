@@ -19,9 +19,12 @@ BOUNDARIES_FILE = DATA_DIR / "boundaries" / "Stadtviertel.parquet"
 OUTPUT_FILE = STATS_DIR / "extended_stats.parquet"
 
 CLASS_LABELS = {
-    1: 'Building', 2: 'Impervious', 3: 'Barren', 4: 'Grass', 5: 'Brush',
-    6: 'Agriculture', 7: 'Tree', 8: 'Water', 9: 'Herbaceous', 10: 'Shrub',
-    11: 'Moss', 12: 'Lichen', 13: 'Unknown'
+    0: 'Building', 1: 'Greenhouse', 2: 'Swimming pool',
+    3: 'Impervious surface', 4: 'Pervious surface', 5: 'Bare soil',
+    6: 'Water', 7: 'Snow', 8: 'Herbaceous vegetation',
+    9: 'Agricultural land', 10: 'Plowed land', 11: 'Vineyard',
+    12: 'Deciduous', 13: 'Coniferous', 14: 'Brushwood',
+    15: 'Clear cut', 16: 'Ligneous', 17: 'Mixed', 18: 'Other'
 }
 
 def calculate_ndvi(nir, red):
@@ -181,7 +184,7 @@ def main():
 
     all_stats = []
     
-    max_workers = min(12, os.cpu_count() or 4)
+    max_workers = min(10, os.cpu_count() or 4)
     print(f"🚀 Starting parallel processing with {max_workers} workers...")
     
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -201,7 +204,6 @@ def main():
                 print(f"❌ Worker error for {tile_id}: {e}")
 
     if all_stats:
-        combined = pd.concat([pd.DataFrame(s, index=[0]) if isinstance(s, dict) else pd.DataFrame(s) for s in all_stats], ignore_index=True)
         combined = pd.DataFrame(all_stats)
         
         final_stats = combined.groupby('name').sum().reset_index()
@@ -212,7 +214,8 @@ def main():
             final_stats.loc[mask_valid, 'ndvi_sum'] / final_stats.loc[mask_valid, 'ndvi_count']
         )
         
-        green_cols = [f"area_{c}" for c in [4, 5, 6, 7, 9, 10, 11, 12]]
+        # Green Area: 8=Herbaceous, 9=Agri, 10=Plowed, 11=Vineyard, 12=Deciduous, 13=Coniferous, 14=Brushwood
+        green_cols = [f"area_{c}" for c in [8, 9, 10, 11, 12, 13, 14]]
         existing_cols = [c for c in green_cols if c in final_stats.columns]
         final_stats['green_area_m2'] = final_stats[existing_cols].sum(axis=1) if existing_cols else 0.0
 
