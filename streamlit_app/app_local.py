@@ -177,7 +177,6 @@ with col_details:
             for k, v in tile_mapping.items(): all_t.update(v)
             current_veedel_tiles = sorted(list(all_t))
 
-
         # Tile Selection (Hidden/Automatic)
         tiles_to_display = current_veedel_tiles
         selected_tile = None
@@ -231,36 +230,79 @@ with col_details:
             </div>
             """
             st.markdown(legend_html_ndvi, unsafe_allow_html=True)
+            
+# --- Map Logic ---
     with tab_stats:
-        if selected_veedel != "All" and gdf_quarters is not None and not gdf_quarters.empty:
-            row = gdf_quarters[gdf_quarters['name'] == selected_veedel]
-            if not row.empty:
-                st.markdown(f"#### {selected_veedel} Stats")
-                area_m2 = row['green_area_m2'].values[0] if 'green_area_m2' in row else 0
-                total_area_m2 = row['Shape_Area'].values[0] if 'Shape_Area' in row else 1
-                
-                c1, c2 = st.columns(2)
-                c1.metric("Green Area", f"{(area_m2/10000):.2f} ha")
-                c2.metric("Green Coverage", f"{(area_m2/total_area_m2)*100:.1f}%")
-                
-                # Class Breakdown (New)
-                class_cols = [c for c in row.index if str(c).startswith('area_')]
+        if gdf_quarters is not None and not gdf_quarters.empty:
+            
+            # Determine data scope (Specific Veedel vs All)
+            class_data_source = None
+            title = ""
+            area_m2 = 0
+            total_area_m2 = 1
+
+            if selected_veedel != "All":
+                row = gdf_quarters[gdf_quarters['name'] == selected_veedel]
+                if row.empty:
+                    st.warning(f"No data found for {selected_veedel}")
+                else:
+                    title = f"{selected_veedel} Stats"
+                    # Single Veedel Data
+                    area_m2 = row['green_area_m2'].values[0] if 'green_area_m2' in row else 0
+                    total_area_m2 = row['Shape_Area'].values[0] if 'Shape_Area' in row else 1
+                    class_data_source = row
+            else:
+                title = "Cologne (All Veedels) Stats"
+                # Aggregate Data
+                area_m2 = gdf_quarters['green_area_m2'].sum() if 'green_area_m2' in gdf_quarters else 0
+                total_area_m2 = gdf_quarters['Shape_Area'].sum() if 'Shape_Area' in gdf_quarters else 1
+                # Aggregate Class Data (Sum all area_ columns)
+                class_cols = [c for c in gdf_quarters.columns if str(c).startswith('area_')]
                 if class_cols:
-                    class_data = row[class_cols].T.reset_index()
+                    # Create a dummy row dict with summed values
+                    summed_data = {c: gdf_quarters[c].sum() for c in class_cols}
+                    # Need to reshape it to match row structure (DataFrame with index match)
+                    class_data_source = pd.DataFrame([summed_data])
+                else:
+                    class_data_source = pd.DataFrame()
+
+            # Display Stats
+            st.markdown(f"#### {title}")
+            
+            c1, c2 = st.columns(2)
+            c1.metric("Green Area", f"{(area_m2/10000):.2f} ha")
+            c2.metric("Green Coverage", f"{(area_m2/total_area_m2)*100:.1f}%")
+            
+            st.divider()
+            
+            # Class Breakdown Chart
+            if class_data_source is not None and not class_data_source.empty:
+                class_cols = [c for c in class_data_source.columns if str(c).startswith('area_')]
+                if class_cols:
+                    class_data = class_data_source[class_cols].T.reset_index()
                     class_data.columns = ['class_col', 'area_m2']
-                    class_data['class_id'] = class_data['class_col'].str.replace('area_', '').astype(int)
+                    # Parse class_id from 'area_X'
+                    class_data['class_id'] = class_data['class_col'].str.replace('area_', '', regex=False)
+                    class_data['class_id'] = pd.to_numeric(class_data['class_id'], errors='coerce')
+                    class_data = class_data.dropna(subset=['class_id'])
+                    class_data['class_id'] = class_data['class_id'].astype(int)
+                    
                     class_data['class_name'] = class_data['class_id'].map(CLASS_LABELS)
                     class_data['color'] = class_data['class_id'].map(lambda x: f"rgba({FLAIR_COLORS[x][0]},{FLAIR_COLORS[x][1]},{FLAIR_COLORS[x][2]}, 1)")
                     
+                    # Sort by area
+                    class_data = class_data.sort_values(by='area_m2', ascending=False)
+                    
                     fig_bar = px.bar(
                         class_data, x='class_name', y='area_m2', 
-                        title="Land Cover Distribution", 
+                        title=f"Land Cover Distribution ({'Total' if selected_veedel == 'All' else selected_veedel})", 
                         labels={'area_m2': 'Area (m²)', 'class_name': 'Class'},
-                        color='class_name', color_discrete_map={row['class_name']: row['color'] for _, row in class_data.iterrows()}
+                        color='class_name', 
+                        color_discrete_map={row['class_name']: row['color'] for _, row in class_data.iterrows()}
                     )
                     st.plotly_chart(fig_bar, use_container_width=True)
-
-# --- Map Logic ---
+                else:
+                    st.info("No detailed land cover statistics available.")
 with col_map:
     # Use standard 3857 Map to ensure compatibility with standard basemaps (CartoDB)
     m = folium.Map(location=st.session_state['map_center'], zoom_start=st.session_state['map_zoom'], tiles="CartoDB positron", crs='EPSG3857')
@@ -320,11 +362,6 @@ with col_map:
         ).add_to(m)
 
     # 4. Tiles Overlay (Mosaicking)
-    tiles_to_display = []
-    if selected_tile: tiles_to_display = [selected_tile]
-    elif selected_veedel != "All" and current_veedel_tiles:
-         tiles_to_display = current_veedel_tiles # Allow all tiles for Veedel (usually <20)
-    
     # helper for mosaic
     def get_mosaic_data(tile_names, layer_type):
         """
@@ -336,9 +373,9 @@ with col_map:
         sources = []
         try:
             for tile_name in tile_names:
-                # Determine Suffix
-                suffix = "_mask" if ("Classes" in layer_type) else "_ndvi"
-                if layer_type == "Raw Satellite (RGB)": suffix = ""
+                # Determine Suffix based on UPDATED layer names: ["Satellite", "Land Cover", "NDVI"]
+                suffix = "_mask" if ("Land Cover" in layer_type) else "_ndvi"
+                if layer_type == "Satellite": suffix = ""
                 
                 # Priority: Optimized -> Processed -> Raw
                 # But we just need a path for rasterio.open
@@ -348,10 +385,10 @@ with col_map:
                 processed_ndvi = PROCESSED_DIR / f"{tile_name}_ndvi.tif"
                 
                 path_to_open = None
-                if layer_type == "Raw Satellite (RGB)":
+                if layer_type == "Satellite":
                     if opt_path.exists(): path_to_open = opt_path
                     elif raw_path.exists(): path_to_open = raw_path
-                elif "Classes" in layer_type:
+                elif "Land Cover" in layer_type:
                     if opt_path.exists(): path_to_open = opt_path
                     elif processed_mask.exists(): path_to_open = processed_mask
                 elif layer_type == "NDVI":
@@ -384,7 +421,7 @@ with col_map:
             
             # Allocate Dest Array (Bands, H, W)
             count = mosaic.shape[0]
-            if layer_type == "Raw Satellite (RGB)" and count < 3: count = 1 
+            if layer_type == "Satellite" and count < 3: count = 1 
             
             dst_array = np.zeros((count, dst_height, dst_width), dtype=mosaic.dtype)
             
@@ -406,7 +443,7 @@ with col_map:
             # 3. Post-Process for Visualization (Coloring & Permute)
             final_image = None
             
-            if layer_type == "Raw Satellite (RGB)":
+            if layer_type == "Satellite":
                 if dst_array.shape[0] >= 3:
                     # (3, H, W) -> (H, W, 3)
                     rgb = np.moveaxis(dst_array[:3], 0, -1)
@@ -423,7 +460,7 @@ with col_map:
                     alpha = np.any(final_image > 0, axis=2).astype(np.uint8) * 255
                     final_image = np.dstack((final_image, alpha))
 
-            elif layer_type == "Land Cover Classes":
+            elif layer_type == "Land Cover":
                 mask_data = dst_array[0] # (H, W)
                 rgba = np.zeros((mask_data.shape[0], mask_data.shape[1], 4), dtype=np.uint8)
                 for cls_id, color in FLAIR_COLORS.items(): 
@@ -437,8 +474,6 @@ with col_map:
                 cmap = plt.get_cmap('RdYlGn')
                 final_image_float = cmap(norm) # (H,W,4) float64
                 final_image = (final_image_float * 255).astype(np.uint8)
-                # Alpha is implicit from cmap (opaque) or warping (0s)
-                # Just return as is
                 pass
 
             return final_image, folium_bounds
@@ -457,15 +492,13 @@ with col_map:
                 folium.raster_layers.ImageOverlay(
                     image=mosaic_img,
                     bounds=mosaic_bounds,
-                    opacity=0.8 if "Classes" in layer_type else 1.0,
+                    opacity=0.8 if "Land Cover" in layer_type else 1.0,
                     name=f"Mosaic - {layer_type}",
                     control=False
                 ).add_to(m)
 
     folium.LayerControl().add_to(m)
 
-    # 5. Map Click Logic (Object-Based)
-    
     # 5. Map Click Logic (Hybrid: Object + Spatial Fallback)
     if 'map_click_counter' not in st.session_state: st.session_state['map_click_counter'] = 0
     
