@@ -11,7 +11,7 @@ from shapely.geometry import Point
 from utils import (
     DATA_DIR, PROCESSED_DIR, FLAIR_COLORS, CLASS_LABELS,
     load_quarters_with_stats, load_boroughs, get_tile_to_veedel_mapping,
-    get_mosaic_data
+    get_mosaic_data_local
 )
 
 # 1. Page Configuration
@@ -219,7 +219,7 @@ with col_map:
     # 4. Tiles Grid (Mosaic)
     if tiles_to_display:
         with st.spinner(f"Loading {len(tiles_to_display)} tiles..."):
-            mosaic_img, mosaic_bounds = get_mosaic_data(tiles_to_display, layer_selection)
+            mosaic_img, mosaic_bounds = get_mosaic_data_local(tiles_to_display, layer_selection)
             if mosaic_img is not None and mosaic_bounds:
                 folium.raster_layers.ImageOverlay(
                     image=mosaic_img, bounds=mosaic_bounds,

@@ -71,10 +71,13 @@ def load_quarters_with_stats():
             gdf = gdf.merge(df_s, on='name', how='left')
             if 'green_area_m2' in gdf.columns:
                 gdf['green_area_m2'] = gdf['green_area_m2'].fillna(0)
+        
+        # Calculate Percentage (Critical)
         if 'green_area_m2' in gdf.columns and 'Shape_Area' in gdf.columns:
              gdf['green_pct'] = (gdf['green_area_m2'] / gdf['Shape_Area']) * 100
         else:
              gdf['green_pct'] = 0.0
+
     except Exception as e:
         st.error(f"Error loading stats: {e}")
     
@@ -104,47 +107,23 @@ def get_tile_to_veedel_mapping():
     joined = gpd.sjoin(tiles_gdf, quarters_gdf, how="inner", predicate="intersects")
     return joined.groupby('name')['Kachelname'].apply(list).to_dict()
 
-# --- Mosaic Logic ---
-def get_mosaic_data(tile_names, layer_type):
+# --- Mosaic Logic (Shared) ---
+def process_mosaic(sources, layer_type):
     """
-    Loads tiles, Mosaics in 25832, Reprojects to 4326, Colorizes.
-    This is complex IO/numpy work, kept separate from UI.
+    Core Mosaic Logic: Merges, Reprojects, and Colorizes open rasterio sources.
+    Aguments:
+        sources: List of open rasterio DatasetReader objects (file or memory).
+        layer_type: String enum ["Satellite", "Land Cover", "NDVI"]
     """
-    sources = []
     try:
-        for tile_name in tile_names:
-            # Determine Suffix
-            suffix = "_mask" if ("Land Cover" in layer_type) else "_ndvi"
-            if layer_type == "Satellite": suffix = ""
-            
-            # Paths
-            opt_path = DATA_DIR / "web_optimized" / f"{tile_name}{suffix}.tif" # or just .tif for RGB
-            raw_path = DATA_DIR / "raw" / f"{tile_name}.jp2"
-            processed_mask = PROCESSED_DIR / f"{tile_name}_mask.tif"
-            processed_ndvi = PROCESSED_DIR / f"{tile_name}_ndvi.tif"
-            
-            path_to_open = None
-            if layer_type == "Satellite":
-                if opt_path.exists(): path_to_open = opt_path
-                elif raw_path.exists(): path_to_open = raw_path
-            elif "Land Cover" in layer_type:
-                if opt_path.exists(): path_to_open = opt_path
-                elif processed_mask.exists(): path_to_open = processed_mask
-            elif layer_type == "NDVI":
-                if opt_path.exists(): path_to_open = opt_path
-                elif processed_ndvi.exists(): path_to_open = processed_ndvi
-            
-            if path_to_open:
-                sources.append(rasterio.open(path_to_open))
-        
         if not sources: return None, None
 
         # 1. Mosaic (Native CRS)
+        # We assume sources are compatible (same bands, dtype). Merge handles overlap.
         mosaic, out_trans = merge(sources)
-        for s in sources: s.close()
         
         # 2. Reproject to WGS84
-        src_crs = CRS.from_epsg(25832)
+        src_crs = CRS.from_epsg(25832) # Assuming all inputs are 25832
         src_height, src_width = mosaic.shape[1], mosaic.shape[2]
         dst_crs = CRS.from_epsg(4326)
         
@@ -171,12 +150,16 @@ def get_mosaic_data(tile_names, layer_type):
         if layer_type == "Satellite":
             if dst_array.shape[0] >= 3:
                 rgb = np.moveaxis(dst_array[:3], 0, -1)
+                
+                # Handle uint16
                 if rgb.dtype == 'uint16':
-                    p2, p98 = np.percentile(rgb[rgb > 0], (2, 98))
-                    rgb = np.clip((rgb - p2) / (p98 - p2), 0, 1)
-                    final_image = (rgb * 255).astype(np.uint8)
+                     p2, p98 = np.percentile(rgb[rgb > 0], (2, 98))
+                     rgb = np.clip((rgb - p2) / (p98 - p2), 0, 1)
+                     final_image = (rgb * 255).astype(np.uint8)
                 else:
                     final_image = rgb
+                
+                # Alpha (Create transparency for 0 values)
                 alpha = np.any(final_image > 0, axis=2).astype(np.uint8) * 255
                 final_image = np.dstack((final_image, alpha))
 
@@ -194,11 +177,54 @@ def get_mosaic_data(tile_names, layer_type):
             final_image_float = cmap(norm)
             final_image = (final_image_float * 255).astype(np.uint8)
             
-        # Calculate Bounds
+        # Calculate Bounds for Leaflet
         dst_bounds = rasterio.transform.array_bounds(dst_height, dst_width, dst_transform)
         folium_bounds = [[dst_bounds[1], dst_bounds[0]], [dst_bounds[3], dst_bounds[2]]]
 
         return final_image, folium_bounds
 
     except Exception as e:
+        # st.error(f"Mosaic Process Error: {e}")
+        return None, None
+
+def get_mosaic_data_local(tile_names, layer_type):
+    """
+    Local IO Wrapper for Mosaic Logic
+    """
+    sources = []
+    try:
+        for tile_name in tile_names:
+            # Determine Suffix
+            suffix = "_mask" if ("Land Cover" in layer_type) else "_ndvi"
+            if layer_type == "Satellite": suffix = ""
+            
+            # Paths
+            opt_path = DATA_DIR / "web_optimized" / f"{tile_name}{suffix}.tif"
+            raw_path = DATA_DIR / "raw" / f"{tile_name}.jp2"
+            processed_mask = PROCESSED_DIR / f"{tile_name}_mask.tif"
+            processed_ndvi = PROCESSED_DIR / f"{tile_name}_ndvi.tif"
+            
+            path_to_open = None
+            if layer_type == "Satellite":
+                if opt_path.exists(): path_to_open = opt_path
+                elif raw_path.exists(): path_to_open = raw_path
+            elif "Land Cover" in layer_type:
+                if opt_path.exists(): path_to_open = opt_path
+                elif processed_mask.exists(): path_to_open = processed_mask
+            elif layer_type == "NDVI":
+                if opt_path.exists(): path_to_open = opt_path
+                elif processed_ndvi.exists(): path_to_open = processed_ndvi
+            
+            if path_to_open:
+                sources.append(rasterio.open(path_to_open))
+        
+        result = process_mosaic(sources, layer_type)
+        
+        # Cleanup
+        for s in sources: s.close()
+        
+        return result
+
+    except Exception as e:
+        for s in sources: s.close()
         return None, None
