@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import folium
 from streamlit_folium import st_folium
-from shapely.geometry import box
+from shapely.geometry import box, Point
 import geopandas as gpd
 
 # 1. Page Configuration
@@ -122,6 +122,8 @@ if 'map_center' not in st.session_state:
     st.session_state['map_center'] = [50.9375, 6.9603] # Cologne Center
 if 'map_zoom' not in st.session_state:
     st.session_state['map_zoom'] = 11 # Whole city view
+if 'map_click_counter' not in st.session_state:
+    st.session_state['map_click_counter'] = 0
 
 # --- Layout ---
 col_map, col_details = st.columns([0.65, 0.35], gap="medium")
@@ -148,6 +150,10 @@ with col_details:
             sel = st.session_state['selected_veedel_widget']
             st.session_state['selected_veedel'] = sel
             update_zoom_for_veedel(sel)
+
+        # Sync Widget with Session State (Map Click)
+        if 'selected_veedel_widget' in st.session_state and st.session_state['selected_veedel'] != st.session_state['selected_veedel_widget']:
+            st.session_state['selected_veedel_widget'] = st.session_state['selected_veedel']
 
         selected_veedel = st.selectbox(
             "Select Quarter (Veedel/Stadtviertel):", 
@@ -177,10 +183,10 @@ with col_details:
 
         st.info("ℹ️ Select a specific Veedel or Tile to view satellite imagery.")
         
-        # Layer Selection
+        # Layer Selection (Removed "Segmentation Mask (Green Highlight)")
         layer_selection = st.radio(
             "Select Layer:",
-            ["Raw Satellite (RGB)", "Segmentation Mask (Green Highlight)", "Land Cover Classes", "NDVI"],
+            ["Raw Satellite (RGB)", "Land Cover Classes", "NDVI"],
             index=1,
             horizontal=True
         )
@@ -302,7 +308,8 @@ with col_map:
         sources = []
         try:
             for tile_name in tile_names:
-                suffix = "_mask" if ("Mask" in layer_type or "Classes" in layer_type) else "_ndvi"
+                # Determine Suffix
+                suffix = "_mask" if ("Classes" in layer_type) else "_ndvi"
                 if layer_type == "Raw Satellite (RGB)": suffix = ""
                 
                 # Priority: Optimized -> Processed -> Raw
@@ -316,7 +323,7 @@ with col_map:
                 if layer_type == "Raw Satellite (RGB)":
                     if opt_path.exists(): path_to_open = opt_path
                     elif raw_path.exists(): path_to_open = raw_path
-                elif "Mask" in layer_type or "Classes" in layer_type:
+                elif "Classes" in layer_type:
                     if opt_path.exists(): path_to_open = opt_path
                     elif processed_mask.exists(): path_to_open = processed_mask
                 elif layer_type == "NDVI":
@@ -378,8 +385,6 @@ with col_map:
                     # Normalize if uint16
                     if rgb.dtype == 'uint16':
                         # Simple Min/Max Scale to avoid percentile overhead on large merges
-                        # or keep original per-tile percentile logic?
-                        # Global percentile might be better for uniformity.
                         p2, p98 = np.percentile(rgb[rgb > 0], (2, 98))
                         rgb = np.clip((rgb - p2) / (p98 - p2), 0, 1)
                         final_image = (rgb * 255).astype(np.uint8)
@@ -387,20 +392,14 @@ with col_map:
                         final_image = rgb
                     
                     # Alpha channel for rotation (where 0 is nodata)
-                    # Assuming (0,0,0) is nodata
                     alpha = np.any(final_image > 0, axis=2).astype(np.uint8) * 255
                     final_image = np.dstack((final_image, alpha))
 
-            elif layer_type in ["Segmentation Mask (Green Highlight)", "Land Cover Classes"]:
+            elif layer_type == "Land Cover Classes":
                 mask_data = dst_array[0] # (H, W)
                 rgba = np.zeros((mask_data.shape[0], mask_data.shape[1], 4), dtype=np.uint8)
-                
-                if layer_type == "Segmentation Mask (Green Highlight)":
-                    for c in [8, 9, 10, 11, 12, 13, 14]: 
-                        rgba[mask_data == c] = [0, 255, 0, 200]
-                else:
-                    for cls_id, color in FLAIR_COLORS.items(): 
-                        rgba[mask_data == cls_id] = color
+                for cls_id, color in FLAIR_COLORS.items(): 
+                    rgba[mask_data == cls_id] = color
                 final_image = rgba
 
             elif layer_type == "NDVI":
@@ -410,23 +409,8 @@ with col_map:
                 cmap = plt.get_cmap('RdYlGn')
                 final_image_float = cmap(norm) # (H,W,4) float64
                 final_image = (final_image_float * 255).astype(np.uint8)
-                # Alpha: make 0/nan transparent?
-                # Usually we want full opacity for NDVI, but corners (0) must be transp.
-                # Since warp fills 0 for nodata, and -0.4 maps to Red, we have a conflict?
-                # warped nodata is usually 0.
-                # But actual NDVI 0.0 is meaningful (soil/building).
-                # We should use src_nodata/dst_nodata.
-                # For now: Just use the alpha from warping? Warping doesn't produce alpha for 1-band unless requested.
-                # Let's set Alpha=0 where ndvi == 0? That hides water/soil. BAD.
-                # Better: Use Alpha channel from reproject?
-                # Or just assume the "Corners" are 0 and map 0 to Transparent?
-                # Better: Check mask from reproject.
-                
-                # Workaround: Reproject a mask of ones alongside?
-                # Simple: Alpha = 0 where ndvi is exactly 0? Risk of hiding valid data.
-                # Let's rely on the fact that `calculate_default_transform` creates a rect.
-                # The data inside is valid.
-                # We can refine this later. For now, display opaque square.
+                # Alpha is implicit from cmap (opaque) or warping (0s)
+                # Just return as is
                 pass
 
             return final_image, folium_bounds
@@ -445,32 +429,47 @@ with col_map:
                 folium.raster_layers.ImageOverlay(
                     image=mosaic_img,
                     bounds=mosaic_bounds,
-                    opacity=0.8 if "Mask" in layer_type else 1.0,
+                    opacity=0.8 if "Classes" in layer_type else 1.0,
                     name=f"Mosaic - {layer_type}",
                     control=False
                 ).add_to(m)
 
     folium.LayerControl().add_to(m)
 
-    # 5. Map Click Logic (Zoom Fix)
-    map_output = st_folium(m, width=None, height=700, key="main_map", use_container_width=True, returned_objects=["last_object_clicked"])
+    # 5. Map Click Logic (Object-Based)
     
-    if map_output['last_object_clicked']:
-        props = map_output['last_object_clicked'].get('properties')
-        if props and 'name' in props:
-            clicked_name = props['name']
-            if clicked_name in veedel_list and clicked_name != st.session_state['selected_veedel']:
-                st.session_state['selected_veedel_widget'] = clicked_name
-                st.session_state['selected_veedel'] = clicked_name
-                # MANUAL UPDATE with centroid fix
-                if gdf_quarters is not None:
-                     match = gdf_quarters[gdf_quarters['name'] == clicked_name]
-                     if not match.empty:
-                         # Reproject to metric (EPSG:25832) for accurate centroid, then back to WGS84
-                         try:
-                             centroid = match.to_crs("EPSG:25832").geometry.centroid.to_crs("EPSG:4326").iloc[0]
-                             st.session_state['map_center'] = [centroid.y, centroid.x]
-                             st.session_state['map_zoom'] = 13
-                         except Exception as e:
-                             st.warning(f"Could not calc centroid: {e}")
-                st.rerun()
+    # 5. Map Click Logic (Hybrid: Object + Spatial Fallback)
+    if 'map_click_counter' not in st.session_state: st.session_state['map_click_counter'] = 0
+    
+    map_key = f"map_{st.session_state['selected_veedel']}_{st.session_state['map_zoom']}_{st.session_state['map_click_counter']}"
+    
+    # Request both object and coordinate data
+    map_output = st_folium(m, width=None, height=700, key=map_key, use_container_width=True, returned_objects=["last_object_clicked", "last_clicked"])
+    
+    clicked_name_final = None
+
+    if map_output:
+        # Strategy A: Object Property (Fast, matches tooltip)
+        if map_output.get('last_object_clicked'):
+            obj = map_output['last_object_clicked']
+            props = obj.get('properties', {})
+            if props and 'name' in props:
+                clicked_name_final = props['name']
+        
+        # Strategy B: Spatial Query Fallback (Robust)
+        if not clicked_name_final and map_output.get('last_clicked'):
+             lat = map_output['last_clicked']['lat']
+             lng = map_output['last_clicked']['lng']
+             if lat is not None and lng is not None:
+                 p = Point(lng, lat)
+                 if gdf_quarters is not None and not gdf_quarters.empty:
+                     matches = gdf_quarters[gdf_quarters.geometry.contains(p)]
+                     if not matches.empty:
+                         clicked_name_final = matches['name'].iloc[0]
+
+    # Execute Update
+    if clicked_name_final and clicked_name_final in veedel_list and clicked_name_final != st.session_state['selected_veedel']:
+        st.session_state['selected_veedel'] = clicked_name_final
+        update_zoom_for_veedel(clicked_name_final)
+        st.session_state['map_click_counter'] += 1
+        st.rerun()
