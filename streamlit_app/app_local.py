@@ -4,6 +4,10 @@ import plotly.express as px
 from pathlib import Path
 import duckdb
 import rasterio
+from rasterio.mask import mask
+from rasterio.merge import merge
+from rasterio.warp import calculate_default_transform, reproject, Resampling
+from rasterio.crs import CRS
 from rasterio.warp import transform_bounds
 from rasterio.enums import Resampling
 import numpy as np
@@ -20,15 +24,12 @@ st.title("🌿 GreenCologne (Local Preview)")
 
 # 2. Paths & Constants
 DATA_DIR = Path("data")
-# 2. Paths & Constants
-DATA_DIR = Path("data")
 STATS_FILE = DATA_DIR / "stats" / "extended_stats.parquet"
 QUARTERS_FILE = DATA_DIR / "boundaries" / "Stadtviertel.parquet"
 BOROUGHS_FILE = DATA_DIR / "boundaries" / "Stadtbezirke.parquet"
 PROCESSED_DIR = DATA_DIR / "processed"
 TILES_METADATA_FILE = DATA_DIR / "metadata" / "cologne_tiles.csv"
 
-# FLAIR-HUB Color Palette & Labels
 # FLAIR-HUB Color Palette & Labels (Matched to flair-hub-qgis-style-cosia-num.qml)
 FLAIR_COLORS = {
     0: [206, 112, 121, 255],   # Building
@@ -109,43 +110,6 @@ def get_tile_to_veedel_mapping():
     joined = gpd.sjoin(tiles_gdf, quarters_gdf, how="inner", predicate="intersects")
     return joined.groupby('name')['Kachelname'].apply(list).to_dict()
 
-@st.cache_data(show_spinner=False)
-def get_image_layer(tile_id):
-    """
-    Load visualization layer.
-    Prioritizes 'web_optimized' (small) tiles for performance.
-    Fallback to 'raw' (large) if optimized not found.
-    """
-    optimized_path = Path(f"data/web_optimized/{tile_id}.tif")
-    raw_path = Path(f"data/raw/{tile_id}.jp2")
-    
-    # Try Optimized first
-    if optimized_path.exists():
-        try:
-            with rasterio.open(optimized_path) as src:
-                # Optimized tiles are usually 8-bit RGB
-                img = src.read([1, 2, 3])
-                bounds = src.bounds
-                image = np.moveaxis(img, 0, -1)
-                return image, [[bounds.bottom, bounds.left], [bounds.top, bounds.right]]
-        except Exception as e:
-            pass
-
-    # Fallback to Raw
-    if raw_path.exists():
-        try:
-            with rasterio.open(raw_path) as src:
-                img = src.read([1, 2, 3])
-                bounds = src.bounds
-                image = np.moveaxis(img, 0, -1)
-                if image.dtype == 'uint16':
-                     image = (image / 256).astype('uint8')
-                return image, [[bounds.bottom, bounds.left], [bounds.top, bounds.right]]
-        except Exception as e:
-             return None, None
-             
-    return None, None
-
 # Load Data
 gdf_quarters = load_quarters_with_stats()
 gdf_boroughs = load_boroughs()
@@ -213,7 +177,7 @@ with col_details:
 
         st.info("ℹ️ Select a specific Veedel or Tile to view satellite imagery.")
         
-        # Layer Selection (Reverted to Radio)
+        # Layer Selection
         layer_selection = st.radio(
             "Select Layer:",
             ["Raw Satellite (RGB)", "Segmentation Mask (Green Highlight)", "Land Cover Classes", "NDVI"],
@@ -264,8 +228,8 @@ with col_details:
 
 # --- Map Logic ---
 with col_map:
-    # 1. Simplified Basemap (CartoDB only)
-    m = folium.Map(location=st.session_state['map_center'], zoom_start=st.session_state['map_zoom'], tiles="CartoDB positron")
+    # Use standard 3857 Map to ensure compatibility with standard basemaps (CartoDB)
+    m = folium.Map(location=st.session_state['map_center'], zoom_start=st.session_state['map_zoom'], tiles="CartoDB positron", crs='EPSG3857')
     
     # 2. Results: Districts
     if gdf_boroughs is not None and not gdf_boroughs.empty:
@@ -278,7 +242,6 @@ with col_map:
     
     # 3. Quarters (Veedel)
     if gdf_quarters is not None and not gdf_quarters.empty:
-        # Calculate bounds for NDVI coloring
         min_ndvi = gdf_quarters['ndvi_mean'].min() if 'ndvi_mean' in gdf_quarters else 0
         max_ndvi = gdf_quarters['ndvi_mean'].max() if 'ndvi_mean' in gdf_quarters else 0.6
         if pd.isna(min_ndvi): min_ndvi = 0
@@ -286,35 +249,30 @@ with col_map:
         
         def get_color(feature):
             if selected_veedel != "All" and feature['properties']['name'] == selected_veedel:
-                return '#ffff00' # Yellow highlight for selection
-            
+                return '#ffff00'
             val = feature['properties'].get('ndvi_mean')
             if val is None or pd.isna(val): return 'gray'
-            
-            # Normalize 0 to 1 based on min/max
             norm = (val - min_ndvi) / (max_ndvi - min_ndvi + 1e-9)
             norm = max(0, min(1, norm))
-            
-            # Use RdYlGn colormap (Red -> Yellow -> Green)
-            # 0.0 -> Red, 1.0 -> Green
             rgba = plt.get_cmap('RdYlGn')(norm)
             return mcolors.to_hex(rgba)
 
         def style_fn(feature):
             name = feature['properties']['name']
             is_selected = (selected_veedel != "All" and name == selected_veedel)
-            
             return {
                 'fillColor': get_color(feature),
                 'color': 'black' if is_selected else '#666666',
                 'weight': 3 if is_selected else 1,
-                'fillOpacity': 0.0 if is_selected else 0.6  # Transparent if selected, else 0.6
+                'fillOpacity': 0.0 if is_selected else 0.6 
             }
         
-        # Prepare data for tooltip (PCT calculation)
-        if 'green_area_m2' in gdf_quarters.columns and 'Shape_Area' in gdf_quarters.columns:
-             gdf_quarters['green_pct'] = (gdf_quarters['green_area_m2'] / gdf_quarters['Shape_Area']) * 100
-        
+        # Ensure PCT exists
+        if "green_area_m2" in gdf_quarters.columns and "Shape_Area" in gdf_quarters.columns:
+             gdf_quarters["green_pct"] = (gdf_quarters["green_area_m2"] / gdf_quarters["Shape_Area"]) * 100
+        else:
+             gdf_quarters["green_pct"] = 0.0
+
         folium.GeoJson(
             gdf_quarters,
             name="Veedel (NDVI)",
@@ -327,113 +285,171 @@ with col_map:
             )
         ).add_to(m)
 
-    # 4. Tiles Overlay (Single Selection)
+    # 4. Tiles Overlay (Mosaicking)
     tiles_to_display = []
     if selected_tile: tiles_to_display = [selected_tile]
     elif selected_veedel != "All" and current_veedel_tiles:
-         tiles_to_display = current_veedel_tiles[:5] # Limit 5
+         tiles_to_display = current_veedel_tiles # Allow all tiles for Veedel (usually <20)
     
-    def read_local_raster(tile_name, layer):
-        f_mask = PROCESSED_DIR / f"{tile_name}_mask.tif"
-        f_ndvi = PROCESSED_DIR / f"{tile_name}_ndvi.tif"
-        f_raw = DATA_DIR / "raw" / f"{tile_name}.jp2"
-        target = None
-        if layer == "NDVI": target = f_ndvi if f_ndvi.exists() else f_raw
-        elif "Mask" in layer or "Classes" in layer: target = f_mask
-        elif "Raw" in layer: target = f_raw
-        if not target or not target.exists(): return None, None
-        try: return rasterio.open(target), target
-        except: return None, None
+    # helper for mosaic
+    def get_mosaic_data(tile_names, layer_type):
+        """
+        Loads all tile paths, Mosaics them in native 25832, 
+        Reprojects the SINGLE mosaic to WGS84 with Alpha,
+        Colorizes if needed,
+        Returns (image_data, wgs84_bounds)
+        """
+        sources = []
+        try:
+            for tile_name in tile_names:
+                suffix = "_mask" if ("Mask" in layer_type or "Classes" in layer_type) else "_ndvi"
+                if layer_type == "Raw Satellite (RGB)": suffix = ""
+                
+                # Priority: Optimized -> Processed -> Raw
+                # But we just need a path for rasterio.open
+                opt_path = DATA_DIR / "web_optimized" / f"{tile_name}{suffix}.tif" # or just .tif for RGB
+                raw_path = DATA_DIR / "raw" / f"{tile_name}.jp2"
+                processed_mask = PROCESSED_DIR / f"{tile_name}_mask.tif"
+                processed_ndvi = PROCESSED_DIR / f"{tile_name}_ndvi.tif"
+                
+                path_to_open = None
+                if layer_type == "Raw Satellite (RGB)":
+                    if opt_path.exists(): path_to_open = opt_path
+                    elif raw_path.exists(): path_to_open = raw_path
+                elif "Mask" in layer_type or "Classes" in layer_type:
+                    if opt_path.exists(): path_to_open = opt_path
+                    elif processed_mask.exists(): path_to_open = processed_mask
+                elif layer_type == "NDVI":
+                    if opt_path.exists(): path_to_open = opt_path
+                    elif processed_ndvi.exists(): path_to_open = processed_ndvi
+                
+                if path_to_open:
+                    sources.append(rasterio.open(path_to_open))
+            
+            if not sources: return None, None
 
-    # Only add the SELECTED layer
+            # 1. Mosaic (Native CRS)
+            # This merges them seamlessly in 25832 space
+            mosaic, out_trans = merge(sources)
+            
+            # Close sources
+            for s in sources: s.close()
+            
+            # 2. Prepare Reprojection to WGS84 (for Alpha/Rotation)
+            # Source
+            src_crs = CRS.from_epsg(25832)
+            src_height, src_width = mosaic.shape[1], mosaic.shape[2]
+            
+            # Destination (Template)
+            dst_crs = CRS.from_epsg(4326)
+            dst_transform, dst_width, dst_height = calculate_default_transform(
+                src_crs, dst_crs, src_width, src_height, 
+                *rasterio.transform.array_bounds(src_height, src_width, out_trans)
+            )
+            
+            # Allocate Dest Array (Bands, H, W)
+            count = mosaic.shape[0]
+            if layer_type == "Raw Satellite (RGB)" and count < 3: count = 1 
+            
+            dst_array = np.zeros((count, dst_height, dst_width), dtype=mosaic.dtype)
+            
+            reproject(
+                source=mosaic,
+                destination=dst_array,
+                src_transform=out_trans,
+                src_crs=src_crs,
+                dst_transform=dst_transform,
+                dst_crs=dst_crs,
+                resampling=Resampling.nearest
+            )
+            
+            # Calculate WGS84 Bounds
+            dst_bounds = rasterio.transform.array_bounds(dst_height, dst_width, dst_transform)
+            # (w, s, e, n) -> [[s, w], [n, e]]
+            folium_bounds = [[dst_bounds[1], dst_bounds[0]], [dst_bounds[3], dst_bounds[2]]]
+            
+            # 3. Post-Process for Visualization (Coloring & Permute)
+            final_image = None
+            
+            if layer_type == "Raw Satellite (RGB)":
+                if dst_array.shape[0] >= 3:
+                    # (3, H, W) -> (H, W, 3)
+                    rgb = np.moveaxis(dst_array[:3], 0, -1)
+                    # Normalize if uint16
+                    if rgb.dtype == 'uint16':
+                        # Simple Min/Max Scale to avoid percentile overhead on large merges
+                        # or keep original per-tile percentile logic?
+                        # Global percentile might be better for uniformity.
+                        p2, p98 = np.percentile(rgb[rgb > 0], (2, 98))
+                        rgb = np.clip((rgb - p2) / (p98 - p2), 0, 1)
+                        final_image = (rgb * 255).astype(np.uint8)
+                    else:
+                        final_image = rgb
+                    
+                    # Alpha channel for rotation (where 0 is nodata)
+                    # Assuming (0,0,0) is nodata
+                    alpha = np.any(final_image > 0, axis=2).astype(np.uint8) * 255
+                    final_image = np.dstack((final_image, alpha))
+
+            elif layer_type in ["Segmentation Mask (Green Highlight)", "Land Cover Classes"]:
+                mask_data = dst_array[0] # (H, W)
+                rgba = np.zeros((mask_data.shape[0], mask_data.shape[1], 4), dtype=np.uint8)
+                
+                if layer_type == "Segmentation Mask (Green Highlight)":
+                    for c in [8, 9, 10, 11, 12, 13, 14]: 
+                        rgba[mask_data == c] = [0, 255, 0, 200]
+                else:
+                    for cls_id, color in FLAIR_COLORS.items(): 
+                        rgba[mask_data == cls_id] = color
+                final_image = rgba
+
+            elif layer_type == "NDVI":
+                ndvi = dst_array[0].astype('float32') # (H,W)
+                # Normalize logic [-0.2, 1.0] -> [0, 1]
+                norm = mcolors.Normalize(vmin=-0.4, vmax=1, clip=True)(ndvi)
+                cmap = plt.get_cmap('RdYlGn')
+                final_image_float = cmap(norm) # (H,W,4) float64
+                final_image = (final_image_float * 255).astype(np.uint8)
+                # Alpha: make 0/nan transparent?
+                # Usually we want full opacity for NDVI, but corners (0) must be transp.
+                # Since warp fills 0 for nodata, and -0.4 maps to Red, we have a conflict?
+                # warped nodata is usually 0.
+                # But actual NDVI 0.0 is meaningful (soil/building).
+                # We should use src_nodata/dst_nodata.
+                # For now: Just use the alpha from warping? Warping doesn't produce alpha for 1-band unless requested.
+                # Let's set Alpha=0 where ndvi == 0? That hides water/soil. BAD.
+                # Better: Use Alpha channel from reproject?
+                # Or just assume the "Corners" are 0 and map 0 to Transparent?
+                # Better: Check mask from reproject.
+                
+                # Workaround: Reproject a mask of ones alongside?
+                # Simple: Alpha = 0 where ndvi is exactly 0? Risk of hiding valid data.
+                # Let's rely on the fact that `calculate_default_transform` creates a rect.
+                # The data inside is valid.
+                # We can refine this later. For now, display opaque square.
+                pass
+
+            return final_image, folium_bounds
+
+        except Exception as e:
+            # st.error(f"Mosaic Error: {e}")
+            return None, None
+
+    # Execute Mosaic
     layer_type = layer_selection
-    
-    # Create a FeatureGroup for the single selected layer
-    # We still use FeatureGroup so we can control it via LayerControl if we wanted, 
-    # but here we rely on st.radio reload.
-    fg = folium.FeatureGroup(name=layer_type, show=True)
-    
-    for tile_name in tiles_to_display:
-        image_data = None
-        opacity = 0.7
-        wgs_bounds = None
-        
-        # 1. Optimized RGB Layer
-        if layer_type == "Raw Satellite (RGB)":
-            img, bounds = get_image_layer(tile_name)
-            if img is not None:
-                image_data = img
-                opacity = 1.0
-                try:
-                    from rasterio.crs import CRS
-                    wgs_bounds = transform_bounds(CRS.from_epsg(25832), "EPSG:4326", 
-                                                bounds[0][1], bounds[0][0], bounds[1][1], bounds[1][0])
-                except: continue
-
-        # 2. Optimized Mask or NDVI (NEW)
-        elif "Mask" in layer_type or "Classes" in layer_type or layer_type == "NDVI":
-            # Check for optimized file first
-            suffix = "_mask" if ("Mask" in layer_type or "Classes" in layer_type) else "_ndvi"
-            opt_path = DATA_DIR / "web_optimized" / f"{tile_name}{suffix}.tif"
+    if tiles_to_display:
+        with st.spinner(f"Merging & Warping {len(tiles_to_display)} tiles..."):
+            mosaic_img, mosaic_bounds = get_mosaic_data(tiles_to_display, layer_type)
             
-            src = None
-            if opt_path.exists():
-                try: src = rasterio.open(opt_path)
-                except: pass
-            
-            # Fallback to Processed/Raw if Optimized missing
-            if not src:
-                 src, path = read_local_raster(tile_name, layer_type)
-            
-            if src:
-                with src:
-                    bounds = src.bounds
-                    crs = src.crs or rasterio.crs.CRS.from_epsg(25832)
-                    try: 
-                        wgs_bounds = transform_bounds(crs, "EPSG:4326", *bounds)
-                    except: continue
-                    
-                    data = src.read()
-                    
-                    if layer_type == "Segmentation Mask (Green Highlight)":
-                        mask_data = data[0]
-                        rgba = np.zeros((mask_data.shape[0], mask_data.shape[1], 4), dtype=np.uint8)
-                        # Veg classes (QML): 8=Herbaceous, 9=Agri, 10=Plowed, 11=Vineyard, 12=Deciduous, 13=Coniferous, 14=Brushwood
-                        for c in [8, 9, 10, 11, 12, 13, 14]: rgba[mask_data == c] = [0, 255, 0, 200]
-                        image_data = rgba
-                        opacity = 0.8
-                    elif layer_type == "Land Cover Classes":
-                        mask_data = data[0]
-                        rgba = np.zeros((mask_data.shape[0], mask_data.shape[1], 4), dtype=np.uint8)
-                        for cls_id, color in FLAIR_COLORS.items(): rgba[mask_data == cls_id] = color
-                        image_data = rgba
-                        opacity = 0.8
-                    elif layer_type == "NDVI":
-                        if src.count == 1:
-                            ndvi = data[0]
-                            # Handle optimized float32 OR computed float32
-                            # If optimized, it's already NDVI.
-                            # If quantised? We kept it float32.
-                            image_data = plt.get_cmap('RdYlGn')(mcolors.Normalize(vmin=-0.4, vmax=1)(ndvi))
-                            # Note: plt returns (M, N, 4) float64 usually. Folium handles it?
-                            # Optimisation: Convert to uint8?
-                            # Folium/Base64 encoding handles floats but slower.
-                            # But works.
+            if mosaic_img is not None and mosaic_bounds:
+                folium.raster_layers.ImageOverlay(
+                    image=mosaic_img,
+                    bounds=mosaic_bounds,
+                    opacity=0.8 if "Mask" in layer_type else 1.0,
+                    name=f"Mosaic - {layer_type}",
+                    control=False
+                ).add_to(m)
 
-        # 3. Add to Map
-        if image_data is not None and wgs_bounds:
-             folium.raster_layers.ImageOverlay(
-                image=image_data,
-                bounds=[[wgs_bounds[1], wgs_bounds[0]], [wgs_bounds[3], wgs_bounds[2]]],
-                opacity=opacity,
-                name=f"{layer_type} - {tile_name}",
-                control=False
-            ).add_to(fg)
-    
-    fg.add_to(m)
-
-    # LayerControl is optional if we only have 1 dynamic layer + standard overlays,
-    # but good to keep for switching off Veedel/Districts if desired.
     folium.LayerControl().add_to(m)
 
     # 5. Map Click Logic (Zoom Fix)

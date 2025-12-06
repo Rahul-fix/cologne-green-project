@@ -395,6 +395,9 @@ with col_map:
                     with memfile.open() as src:
                         bounds = src.bounds
                         crs = src.crs
+                        # Native Bounds (EPSG:25832)
+                        # We transform BOUNDS to WGS84 for Leaflet, but keep IMAGE in 25832 structure.
+                        # This "stretches" it slightly but avoids pixel loss/blur from reprojection.
                         try:
                              from rasterio.crs import CRS
                              if not crs or not crs.is_epsg_code: crs = CRS.from_epsg(25832)
@@ -408,7 +411,6 @@ with col_map:
                         if layer_type == "Segmentation Mask (Green Highlight)":
                             mask = data[0]
                             rgba = np.zeros((mask.shape[0], mask.shape[1], 4), dtype=np.uint8)
-                            # Veg classes based on QML (8-14)
                             for c in [8, 9, 10, 11, 12, 13, 14]: rgba[mask == c] = [0, 255, 0, 200]
                             image_data = rgba
                             opacity = 0.8
@@ -421,32 +423,29 @@ with col_map:
                         elif layer_type == "NDVI":
                             if src.count == 1:
                                 ndvi = data[0].astype('float32')
-                                # Normalize if not already -1 to 1?
-                                # If it's the optimized file, it is -1..1 float32
-                                # or int8? Metadata said float32.
-                                # But we need to handle potential scale factors. 
-                                # Assuming consistent -1..1
-                                pass
+                                image_data = plt.get_cmap('RdYlGn')(mcolors.Normalize(vmin=-0.2, vmax=1)(ndvi))
                             else:
                                 r, nir = data[0].astype('float32'), data[3].astype('float32')
                                 ndvi = (nir - r) / (nir + r + 1e-8)
-                            
-                            image_data = plt.get_cmap('RdYlGn')(mcolors.Normalize(vmin=-1, vmax=1)(ndvi))
+                                image_data = plt.get_cmap('RdYlGn')(mcolors.Normalize(vmin=-0.2, vmax=1)(ndvi))
                         elif layer_type == "Raw Satellite (RGB)":
                             if src.count >= 3:
                                 rgb = np.dstack((data[0], data[1], data[2]))
-                                p2, p98 = np.percentile(rgb, (2, 98))
-                                image_data = np.clip((rgb - p2) / (p98 - p2), 0, 1)
+                                # Handle uint16 raw
+                                if rgb.dtype == 'uint16':
+                                     p2, p98 = np.percentile(rgb, (2, 98))
+                                     rgb = np.clip((rgb - p2) / (p98 - p2), 0, 1)
+                                image_data = rgb
                                 opacity = 1.0
                                 
                         if image_data is not None:
-                             folium.raster_layers.ImageOverlay(
+                            folium.raster_layers.ImageOverlay(
                                 image=image_data,
                                 bounds=[[wgs_bounds[1], wgs_bounds[0]], [wgs_bounds[3], wgs_bounds[2]]],
                                 opacity=opacity,
                                 name=f"{layer_type} - {tile_name}",
                                 control=False
-                             ).add_to(fg)
+                            ).add_to(fg)
             except Exception as e:
                 pass # print(e)
     fg.add_to(m)
