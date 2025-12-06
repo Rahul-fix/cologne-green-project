@@ -157,7 +157,7 @@ if 'selected_veedel' not in st.session_state:
 if 'map_center' not in st.session_state:
     st.session_state['map_center'] = [50.9375, 6.9603] # Cologne Center
 if 'map_zoom' not in st.session_state:
-    st.session_state['map_zoom'] = 10 # Whole city view
+    st.session_state['map_zoom'] = 11 # Whole city view
 
 # --- Layout ---
 col_map, col_details = st.columns([0.65, 0.35], gap="medium")
@@ -414,7 +414,7 @@ with col_map:
                             # Handle optimized float32 OR computed float32
                             # If optimized, it's already NDVI.
                             # If quantised? We kept it float32.
-                            image_data = plt.get_cmap('RdYlGn')(mcolors.Normalize(vmin=-0.2, vmax=1)(ndvi))
+                            image_data = plt.get_cmap('RdYlGn')(mcolors.Normalize(vmin=-0.4, vmax=1)(ndvi))
                             # Note: plt returns (M, N, 4) float64 usually. Folium handles it?
                             # Optimisation: Convert to uint8?
                             # Folium/Base64 encoding handles floats but slower.
