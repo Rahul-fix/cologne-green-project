@@ -144,7 +144,7 @@ with col_details:
                  if not match.empty:
                      centroid = match.geometry.centroid.iloc[0]
                      st.session_state['map_center'] = [centroid.y, centroid.x]
-                     st.session_state['map_zoom'] = 13
+                     st.session_state['map_zoom'] = 14
 
         def on_veedel_change():
             sel = st.session_state['selected_veedel_widget']
@@ -177,23 +177,40 @@ with col_details:
             for k, v in tile_mapping.items(): all_t.update(v)
             current_veedel_tiles = sorted(list(all_t))
 
-        tile_options = ["- Select a Tile -"] + current_veedel_tiles
-        selected_tile = st.selectbox("Select Tile:", tile_options)
-        if selected_tile == "- Select a Tile -": selected_tile = None
 
-        st.info("ℹ️ Select a specific Veedel or Tile to view satellite imagery.")
+        # Tile Selection (Hidden/Automatic)
+        tiles_to_display = current_veedel_tiles
+        selected_tile = None
         
-        # Layer Selection (Removed "Segmentation Mask (Green Highlight)")
+        # Layer Selection
         layer_selection = st.radio(
             "Select Layer:",
-            ["Raw Satellite (RGB)", "Land Cover Classes", "NDVI"],
+            ["Satellite", "Land Cover", "NDVI"],
             index=1,
             horizontal=True
         )
         
-        # Legend (Conditional based on layer)
-        if layer_selection == "Land Cover Classes":
-            st.markdown("#### Legend")
+        # --- LEGENDS ---
+        st.markdown("#### Legends")
+        
+        # 1. District Mean NDVI Legend (Always visible)
+        st.markdown("**Veedel Health (Mean NDVI)**")
+        legend_html_veedel = """
+        <div style="background: linear-gradient(to right, #d73027, #ffffbf, #1a9850); height: 10px; width: 100%; border-radius: 5px;"></div>
+        <div style="display: flex; justify-content: space-between; font-size: 10px; margin-top: 2px;">
+            <span>0.0 (Low)</span>
+            <span>0.3</span>
+            <span>0.6+ (High)</span>
+        </div>
+        <div style="font-size: 11px; color: #666; margin-bottom: 15px;">
+            *Average vegetation index per district.
+        </div>
+        """
+        st.markdown(legend_html_veedel, unsafe_allow_html=True)
+
+        # 2. Layer Specific Legends
+        if layer_selection == "Land Cover":
+            st.markdown("**Land Cover Classes**")
             legend_html = "<div style='display: grid; grid-template-columns: 1fr 1fr; gap: 5px; font-size: 12px;'>"
             for cls_id, label in CLASS_LABELS.items():
                 if cls_id == 13: continue
@@ -202,7 +219,18 @@ with col_details:
                 legend_html += f"<div style='display: flex; align-items: center;'><div style='width: 12px; height: 12px; background: {color_css}; margin-right: 5px; border: 1px solid #ccc;'></div>{label}</div>"
             legend_html += "</div>"
             st.markdown(legend_html, unsafe_allow_html=True)
-
+            
+        elif layer_selection == "NDVI":
+            st.markdown("**Pixel Vegetation Index (NDVI)**")
+            legend_html_ndvi = """
+            <div style="background: linear-gradient(to right, #d73027, #ffffbf, #1a9850); height: 10px; width: 100%; border-radius: 5px;"></div>
+            <div style="display: flex; justify-content: space-between; font-size: 10px; margin-top: 2px;">
+                <span>-0.4 (Water)</span>
+                <span>0.3</span>
+                <span>1.0 (Dense)</span>
+            </div>
+            """
+            st.markdown(legend_html_ndvi, unsafe_allow_html=True)
     with tab_stats:
         if selected_veedel != "All" and gdf_quarters is not None and not gdf_quarters.empty:
             row = gdf_quarters[gdf_quarters['name'] == selected_veedel]
