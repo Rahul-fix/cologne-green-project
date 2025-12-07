@@ -128,11 +128,14 @@ The dashboard visualizes 19 land cover classes from the FLAIR-Hub segmentation m
 graph LR
     A[OpenNRW Tiles] --> B[Download 840 tiles]
     B --> C[FLAIR-Hub Inference]
-    C --> D[Land Cover Masks]
-    D --> E[Calculate Stats]
-    E --> F[Parquet Files]
-    F --> G[Dashboard]
-    G --> H[Hugging Face]
+    B --> D[Calculate NDVI]
+    C --> E[Land Cover Masks]
+    D --> F[NDVI Rasters]
+    E --> G[Calculate Stats]
+    F --> G
+    G --> H[Parquet Files]
+    H --> I[Dashboard]
+    I --> J[Hugging Face]
 ```
 
 ### Key Scripts
