@@ -1,0 +1,62 @@
+batch_size: 10
+cog_conversion: true
+img_pixels_detection: 512
+margin: 32
+modalities:
+  AERIAL_RGBI:
+    channels:
+    - 4
+    - 1
+    - 2
+    input_img_path: ./data/satellite/R10cm/notebook_test.tif
+    normalization:
+      means:
+      - 106.59
+      - 105.66
+      - 111.35
+      stds:
+      - 39.78
+      - 52.23
+      - 45.62
+      type: custom
+  inputs:
+    AERIAL-RLT_PAN: false
+    AERIAL_RGBI: true
+    DEM_ELEV: false
+    SENTINEL1-ASC_TS: false
+    SENTINEL1-DESC_TS: false
+    SENTINEL2_TS: false
+    SPOT_RGBI: false
+model_weights: ./FLAIR-HUB_LC-A_IR_swinbase-upernet/FLAIR-HUB_LC-A_IR_swinbase-upernet.safetensors
+monotemp_arch: swin_base_patch4_window12_384-upernet
+multitemp_model_ref_date: 05-15
+num_worker: 0
+output_name: notebook_test_result
+output_path: ./output_segmentation
+output_px_meters: 0.1
+output_type: argmax
+tasks:
+- active: true
+  class_names:
+    0: building
+    1: greenhouse
+    2: swimming_pool
+    3: impervious surface
+    4: pervious surface
+    5: bare soil
+    6: water
+    7: snow
+    8: herbaceous vegetation
+    9: agricultural land
+    10: plowed land
+    11: vineyard
+    12: deciduous
+    13: coniferous
+    14: brushwood
+    15: clear cut
+    16: ligneous
+    17: mixed
+    18: undefined
+  name: AERIAL_LABEL-COSIA
+use_gpu: true
+write_dataframe: true

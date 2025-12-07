@@ -1,0 +1,3 @@
+[submodule "DL_cologne_green/FLAIR-HUB"]
+	path = DL_cologne_green/FLAIR-HUB
+	url = https://github.com/IGNF/FLAIR-HUB.git

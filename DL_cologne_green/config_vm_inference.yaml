@@ -1,0 +1,76 @@
+# ======================
+# I/O Paths
+# ======================
+output_path: ./output_segmentation
+output_name: nrw_green_areas
+
+write_dataframe: True
+output_type: argmax  # or 'class_prob' for probabilities
+cog_conversion: True  # Creates Cloud-Optimized GeoTIFF
+
+# ======================
+# Model Configuration
+# ======================
+model_weights: ./FLAIR-HUB_LC-A_IR_swinbase-upernet/FLAIR-HUB_LC-A_IR_swinbase-upernet.safetensors
+use_gpu: True
+batch_size: 10 #16 # Optimized for Nvidia T4 (16GB VRAM)
+num_worker: 0  # Matches your 4 vCPUs
+
+img_pixels_detection: 512  # Process 512x512 tiles
+margin: 32  # Overlap to avoid edge artifacts
+output_px_meters: 0.1  # Match your 10cm resolution
+
+# ======================
+# Model Architecture
+# ======================
+monotemp_arch: swin_base_patch4_window12_384-upernet
+multitemp_model_ref_date: 05-15
+
+# ======================
+# Input Modality
+# ======================
+modalities:
+  inputs:
+    AERIAL_RGBI: True
+    AERIAL-RLT_PAN: False
+    DEM_ELEV: False
+    SPOT_RGBI: False
+    SENTINEL2_TS: False
+    SENTINEL1-ASC_TS: False
+    SENTINEL1-DESC_TS: False
+
+  AERIAL_RGBI:
+    input_img_path: ./data/raw/dop10rgbi_32_344_5650_1_nw_2025.jp2 # Placeholder, script updates this
+    channels: [4, 1, 2]  # NIR, R, G
+    normalization:
+      type: custom
+      # These are FLAIR dataset statistics (adjust if needed)
+      means: [106.59, 105.66, 111.35]
+      stds: [39.78, 52.23, 45.62]
+
+# ======================
+# Task Definition
+# ======================
+tasks:
+  - name: AERIAL_LABEL-COSIA
+    active: True
+    class_names:
+      0: building
+      1: greenhouse
+      2: swimming_pool
+      3: impervious surface
+      4: pervious surface
+      5: bare soil
+      6: water
+      7: snow
+      8: herbaceous vegetation
+      9: agricultural land
+      10: plowed land
+      11: vineyard
+      12: deciduous
+      13: coniferous
+      14: brushwood
+      15: clear cut
+      16: ligneous
+      17: mixed
+      18: undefined

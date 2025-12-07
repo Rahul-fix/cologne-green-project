@@ -1,21 +1,29 @@
-## Ignore data outputs and large files, but allow specific files in data/outputs/
-data/outputs/*
-!data/outputs/.gitkeep
-!data/outputs/ndvi_10m_github.png
-!data/outputs/veedel_green_categorized_resized.png
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+data/dop_j2w/
+
+# Virtual environments
+.venv
+.env
+
+# Data
+data/raw/
+data/processed/
+data/boundaries/
+data/stats/
 *.tif
 *.jp2
-*.gpkg
-*.qgz
-*.shp
-*.dbf
-*.prj
-*.shx
-*.sbn
-*.sbx
-*.csv
-*.aux.xml
-*.png
-!README.md
-!Notebooks/
-!data/boundaries/
+*.parquet
+*.zip
+*.tar.gz
+
+# Model Weights
+DL_cologne_green/FLAIR-HUB_LC-A_IR_swinbase-upernet/
+
+# OS
+.DS_Store
