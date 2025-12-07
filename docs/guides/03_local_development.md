@@ -42,7 +42,16 @@ docker build -t greencologne .
 docker run -p 7860:7860 -e HF_TOKEN="hf_xxx" greencologne
 # Opens http://localhost:7860
 ```
+### Docker Commands Reference
+```bash
+# Stop the container
+docker stop greencologne && docker rm greencologne
 
+# Rebuild (if you make changes)
+cd hf_space && docker build -t greencologne .
+
+# Run again
+docker run -p 7860:7860 -e HF_TOKEN="your_token" greencologne
 ## Code Structure
 
 ```
