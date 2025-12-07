@@ -274,7 +274,7 @@ with col_details:
         layer_selection = st.radio(
             "Select Layer:",
             ["Satellite", "Land Cover", "NDVI"],
-            index=1,
+            index=2,
             horizontal=True
         )
         
