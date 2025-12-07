@@ -69,8 +69,8 @@ with col_details:
             index=veedel_list.index(st.session_state['selected_veedel']) if st.session_state['selected_veedel'] in veedel_list else 0
         )
 
-        # Tile Logic
-        current_veedel_tiles = []
+        # Tile Logic - Only load tiles when a specific veedel is selected
+        tiles_to_display = []
         if selected_veedel != "All":
             veedel_tiles = set(tile_mapping.get(selected_veedel, []))
             filtered_tiles = []
@@ -79,19 +79,13 @@ with col_details:
                      if (DATA_DIR / "raw" / f"{t}.jp2").exists() or (PROCESSED_DIR / f"{t}_mask.tif").exists():
                          filtered_tiles.append(t)
                  except: pass
-            current_veedel_tiles = sorted(filtered_tiles)
-        else:
-            all_t = set()
-            for k, v in tile_mapping.items(): all_t.update(v)
-            current_veedel_tiles = sorted(list(all_t))
-
-        tiles_to_display = current_veedel_tiles
+            tiles_to_display = sorted(filtered_tiles)
         
         # Layer Selection
         layer_selection = st.radio(
             "Select Layer:",
             ["Satellite", "Land Cover", "NDVI"],
-            index=1,
+            index=2,
             horizontal=True
         )
         
