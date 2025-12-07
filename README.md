@@ -5,7 +5,7 @@
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.28+-FF4B4B.svg)](https://streamlit.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-An interactive geospatial dashboard analyzing green spaces across Cologne's 86 neighborhoods ("Veedel"). Powered by **deep learning land cover segmentation**, **satellite imagery from OpenNRW**, and **NDVI vegetation indexing**.
+An interactive geospatial dashboard ([link](https://huggingface.co/spaces/Rahul-fix/cologne-green-project)) analyzing green spaces across Cologne's 86 neighborhoods ("Veedel"). Powered by **deep learning land cover segmentation**, **satellite imagery from OpenNRW**, and **NDVI vegetation indexing**.
 
 <p align="center">
   <img src="docs/assets/dashboard_preview.png" alt="GreenCologne Dashboard" width="800"/>
@@ -20,6 +20,7 @@ An interactive geospatial dashboard analyzing green spaces across Cologne's 86 n
 - **Land Cover Overlay**: 19-class semantic segmentation (buildings, water, vegetation, etc.)
 - **Satellite Imagery**: High-resolution aerial photos from OpenNRW (10cm resolution)
 - **Click-to-Select**: Interactive neighborhood exploration
+- **Statistics**: Green area metrics, land cover distribution, NDVI analysis
 
 ### 📊 Comprehensive Statistics
 - **Green Area Metrics**: Hectares of vegetation per neighborhood
@@ -55,7 +56,7 @@ An interactive geospatial dashboard analyzing green spaces across Cologne's 86 n
 ### Installation
 
 ```bash
-# Clone the repository
+# Fork and clone the repository
 git clone https://github.com/YOUR_USERNAME/cologne-green-project.git
 cd cologne-green-project
 
@@ -162,7 +163,7 @@ docker run -p 7860:7860 -e HF_TOKEN="hf_xxx" greencologne
 
 ## 📊 Data Sources
 
-- **Satellite Imagery**: [OpenNRW DOP10](https://www.opengeodata.nrw.de/produkte/geobasis/lusat/dop/dop10rgbi/) – 10cm resolution aerial photos
+- **Satellite Imagery**: [OpenNRW DOP10](https://www.opengeodata.nrw.de/produkte/geobasis/lusat/akt/dop/dop_jp2_f10/) – 10cm resolution aerial photos
 - **Administrative Boundaries**: [Offene Daten Köln](https://www.offenedaten-koeln.de/) – Stadtviertel & Stadtbezirke
 - **Land Cover Model**: [FLAIR-Hub](https://huggingface.co/IGNF/FLAIR-HUB) – Semantic segmentation trained on French aerial imagery
 
