@@ -122,6 +122,40 @@ The dashboard visualizes 19 land cover classes from the FLAIR-Hub segmentation m
 
 ---
 
+---
+
+## 🔄 Project Evolution
+
+This project evolved through two distinct phases, demonstrating different approaches to urban green space analysis:
+
+### Phase 1: QGIS-Based Analysis (Foundation)
+The initial approach used **QGIS and Python** for manual geospatial analysis:
+- 📍 **Sentinel-2 imagery** (10m resolution) for NDVI calculation
+- 🗺️ **GeoPackage database** (`cologne_analysis.gpkg`) for data management
+- 📊 **PyQGIS workflows** for vector/raster operations
+- 📁 See: `WORKFLOW.md` and `Notebooks/cologne_analysis_workflow.ipynb`
+
+<p align="center">
+  <img src="data/outputs/ndvi_10m_github.png" alt="NDVI Analysis (Phase 1)" width="400"/>
+  <img src="data/outputs/veedel_green_categorized_resized.png" alt="Veedel Categorization" width="400"/>
+</p>
+
+### Phase 2: Deep Learning Pipeline (Current)
+The current approach uses **FLAIR-Hub semantic segmentation** for automated analysis:
+- 🤖 **Deep learning inference** on 840 OpenNRW aerial tiles (10cm resolution)
+- 🏷️ **19-class land cover classification** (buildings, vegetation, water, etc.)
+- 🌿 **Automated NDVI calculation** from NIR/Red bands
+- 🚀 **Streamlit dashboard** with local and cloud deployment
+- ☁️ **Hugging Face Spaces** for public access
+
+| Aspect | Phase 1 (QGIS) | Phase 2 (Deep Learning) |
+|--------|----------------|------------------------|
+| Resolution | 10m (Sentinel-2) | 10cm (OpenNRW DOP10) |
+| Coverage | City-wide NDVI | 840 individual tiles |
+| Classification | Manual thresholding | 19-class semantic segmentation |
+| Automation | Semi-automated | Fully automated pipeline |
+| Deployment | Local notebooks | Docker + HF Spaces |
+
 ## 📈 Data Pipeline
 
 ```mermaid
