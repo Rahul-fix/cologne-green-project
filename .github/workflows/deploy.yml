@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'hf_space/**'
+      - '.github/workflows/deploy.yml'
 
 env:
   HF_USERNAME: Rahul-fix
