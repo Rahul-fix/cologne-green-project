@@ -18,6 +18,46 @@ from utils import (
 st.set_page_config(page_title="GreenCologne (Local)", layout="wide")
 st.title("🌿 GreenCologne (Local Preview)")
 
+# --- Sidebar: Dataset Info ---
+with st.sidebar:
+    st.header("ℹ️ About This Dataset")
+    
+    with st.expander("📡 Data Sources", expanded=False):
+        st.markdown("""
+        **Satellite Imagery**  
+        [OpenNRW DOP10](https://www.bezreg-koeln.nrw.de/geobasis-nrw/produkte-und-dienste/luftbild-und-satellitenbildinformationen/aktuelle-luftbild-und-0) – 10cm resolution aerial photos (2022-2025)
+        
+        **Administrative Boundaries**  
+        [Offene Daten Köln](https://www.offenedaten-koeln.de/) – Stadtviertel & Stadtbezirke
+        
+        **Coverage**  
+        840 tiles covering Cologne's 86 Veedels
+        """)
+    
+    with st.expander("🤖 Model & Methodology", expanded=False):
+        st.markdown("""
+        **Land Cover Classification**  
+        [FLAIR-Hub](https://huggingface.co/IGNF/FLAIR-HUB_LC-A_IR_swinbase-upernet) – Deep learning semantic segmentation trained on French aerial imagery, adapted for German urban landscapes.
+        
+        **19 Land Cover Classes**  
+        Buildings, deciduous trees, herbaceous vegetation, water, impervious surfaces, agricultural land, and more.
+        
+        **NDVI Calculation**  
+        Normalized Difference Vegetation Index computed from NIR and Red bands:  
+        `NDVI = (NIR - Red) / (NIR + Red)`
+        
+        **Green Area Detection**  
+        Classes 4 (Deciduous), 5 (Coniferous), 17 (Herbaceous), and 18 (Agricultural) are classified as green areas.
+        """)
+    
+    with st.expander("🙏 Acknowledgments", expanded=False):
+        st.markdown("""
+        - [CorrelAid](https://correlaid.org/) – Data-for-good community
+        - [OpenNRW](https://www.opengeodata.nrw.de/) – Open geospatial data
+        - [IGNF/FLAIR-Hub](https://huggingface.co/IGNF/FLAIR-HUB_LC-A_IR_swinbase-upernet) – Segmentation model
+        - [Stadt Köln](https://www.stadt-koeln.de/) – Open administrative data
+        """)
+
 # 2. Data Loading
 gdf_quarters = load_quarters_with_stats()
 gdf_boroughs = load_boroughs()
@@ -154,13 +194,21 @@ with col_details:
                     class_data['color'] = class_data['class_id'].map(lambda x: f"rgba({FLAIR_COLORS[x][0]},{FLAIR_COLORS[x][1]},{FLAIR_COLORS[x][2]}, 1)")
                     class_data = class_data.sort_values(by='area_m2', ascending=False)
                     
-                    fig_bar = px.bar(
-                        class_data, x='class_name', y='area_m2', 
-                        title=f"Land Cover Distribution", 
-                        labels={'area_m2': 'Area (m²)'}, color='class_name', 
-                        color_discrete_map={row['class_name']: row['color'] for _, row in class_data.iterrows()}
+                    fig_pie = px.pie(
+                        class_data, 
+                        names='class_name', 
+                        values='area_m2', 
+                        title="Land Cover Distribution", 
+                        color='class_name', 
+                        color_discrete_map={row['class_name']: row['color'] for _, row in class_data.iterrows()},
+                        labels={'class_name': 'Land Cover', 'area_m2': 'Area'}
                     )
-                    st.plotly_chart(fig_bar, use_container_width=True)
+                    fig_pie.update_traces(
+                        textposition='inside',
+                        textinfo='percent',
+                        hovertemplate='<b>%{label}</b><br>Area: %{value:,.0f} m² (%{percent})<extra></extra>'
+                    )
+                    st.plotly_chart(fig_pie, use_container_width=True)
                 else: st.info("No detailed land cover data.")
 
 # --- Map View ---

@@ -40,7 +40,7 @@ An interactive geospatial dashboard ([link](https://huggingface.co/spaces/Rahul-
 | **Frontend** | Streamlit, Folium, Plotly |
 | **Geospatial** | GeoPandas, Shapely, Rasterio |
 | **Data** | DuckDB, Parquet, GeoTIFF |
-| **ML/AI** | FLAIR-Hub (semantic segmentation), Transformers |
+| **ML/AI** | [FLAIR-Hub](https://huggingface.co/IGNF/FLAIR-HUB_LC-A_IR_swinbase-upernet) (semantic segmentation), Transformers |
 | **Cloud** | Hugging Face Hub, Docker |
 | **Source Data** | OpenNRW (satellite), Offene Daten Köln (boundaries) |
 
@@ -200,9 +200,21 @@ docker run -p 7860:7860 -e HF_TOKEN="hf_xxx" greencologne
 
 ## 📊 Data Sources
 
-- **Satellite Imagery**: [OpenNRW DOP10](https://www.opengeodata.nrw.de/produkte/geobasis/lusat/akt/dop/dop_jp2_f10/) – 10cm resolution aerial photos
+- **Satellite Imagery**: [OpenNRW DOP10](https://www.bezreg-koeln.nrw.de/geobasis-nrw/produkte-und-dienste/luftbild-und-satellitenbildinformationen/aktuelle-luftbild-und-0) – 10cm resolution aerial photos (2022-2025)
 - **Administrative Boundaries**: [Offene Daten Köln](https://www.offenedaten-koeln.de/) – Stadtviertel & Stadtbezirke
-- **Land Cover Model**: [FLAIR-Hub](https://huggingface.co/IGNF/FLAIR-HUB) – Semantic segmentation trained on French aerial imagery
+- **Land Cover Model**: [FLAIR-Hub](https://huggingface.co/IGNF/FLAIR-HUB_LC-A_IR_swinbase-upernet) – Semantic segmentation trained on French aerial imagery
+
+---
+
+## 🔄 CI/CD Pipeline
+
+This project uses **GitHub Actions** for continuous integration and deployment:
+
+- **Automatic Testing**: Docker builds are tested on every push to `main`
+- **Automatic Deployment**: Changes to `hf_space/` trigger deployment to Hugging Face Spaces
+- **Health Checks**: Container health is verified before deployment
+
+See [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) for the workflow configuration.
 
 ---
 
@@ -228,7 +240,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - **[CorrelAid](https://correlaid.org/)** – Data-for-good community enabling this project
 - **[OpenNRW](https://www.opengeodata.nrw.de/)** – Open geospatial data for North Rhine-Westphalia
-- **[IGNF/FLAIR-Hub](https://huggingface.co/IGNF/FLAIR-HUB)** – State-of-the-art land cover segmentation
+- **[IGNF/FLAIR-Hub](https://huggingface.co/IGNF/FLAIR-HUB_LC-A_IR_swinbase-upernet)** – State-of-the-art land cover segmentation
 - **[Stadt Köln](https://www.stadt-koeln.de/)** – Open administrative data
 
 ---
