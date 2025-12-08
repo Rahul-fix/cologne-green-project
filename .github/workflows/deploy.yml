@@ -50,7 +50,8 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          huggingface-cli upload ${{ env.HF_USERNAME }}/${{ env.HF_SPACE_NAME }} \
+          python -m huggingface_hub.commands.huggingface_cli upload \
+            ${{ env.HF_USERNAME }}/${{ env.HF_SPACE_NAME }} \
             ./hf_space . \
             --repo-type space \
             --token $HF_TOKEN
