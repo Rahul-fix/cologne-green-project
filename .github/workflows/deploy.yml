@@ -37,24 +37,22 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-
-      - name: Install Hugging Face CLI
-        run: pip install huggingface_hub
+          fetch-depth: 0
+          lfs: true
 
       - name: Push to Hugging Face Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python -m huggingface_hub.commands.huggingface_cli upload \
-            ${{ env.HF_USERNAME }}/${{ env.HF_SPACE_NAME }} \
-            ./hf_space . \
-            --repo-type space \
-            --token $HF_TOKEN
+          cd hf_space
+          git init
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git remote add space https://${{ env.HF_USERNAME }}:$HF_TOKEN@huggingface.co/spaces/${{ env.HF_USERNAME }}/${{ env.HF_SPACE_NAME }}
+          git add .
+          git commit -m "Deploy from GitHub Actions"
+          git push --force space HEAD:main
 
       - name: Deployment summary
         run: |
